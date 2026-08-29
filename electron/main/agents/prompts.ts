@@ -8,6 +8,7 @@ function context(pack?: ContextPack) {
   if (!pack) return '工作台没有附加上下文包。请先读取授权范围内的仓库文件，并明确指出上下文缺口。';
   return [
     '作者档案状态约束：只有 status=confirmed 的风格规则已经生效；candidate/rejected 仅供审查，不能当作作者约束执行。',
+    '能力与权限硬边界：逐项对照正典中的触发条件、作用距离、代价、已解锁阶段和角色实际可接触信息。匿名界面、远程文件或他人口述不会自动成为超自然能力、技术权限或职业权限可直接感知的对象；Writer 不得越界写作，Observer 必须把条件不满足的问题标为能力边界或知识边界。',
     `上下文包 ${pack.id}（${pack.characters}/${pack.budget} 字符）：`,
     ...pack.items.filter((item) => item.included).map((item) => `\n## ${item.title}\n来源：${item.source}\n入选理由：${item.reason}\n${item.content}`),
     ...(pack.gaps.length ? [`\n已知缺口：${pack.gaps.join('；')}`] : [])
