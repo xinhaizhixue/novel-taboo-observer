@@ -70,7 +70,17 @@ export const STYLE_SCHEMA = {
 
 export function observerPrompt(input: ObserverRunRequest) {
   const { snapshot } = input;
-  return `你是独立的长篇网文 Observer。你只审查，不修改任何文件。请分析下面不可变快照，并严格输出符合给定 JSON Schema 的结果。\n\n快照信息：\n- snapshotId: ${snapshot.id}\n- filePath: ${snapshot.filePath}\n- hash: ${snapshot.hash}\n- editorVersion: ${snapshot.editorVersion}\n- mode: ${input.mode}\n${snapshot.selection ? `- selection: ${snapshot.selection.start}-${snapshot.selection.end}` : ''}\n${input.commentId ? `- 关联评论：${input.commentId}` : ''}\n${input.question ? `- 作者请求：${input.question}` : ''}\n\n规则：\n1. 只为真正有帮助的问题建评论，避免逐句吹毛求疵；普通建议不超过 5 条，阻塞问题优先。\n2. quote 必须逐字复制自快照，start/end 使用 UTF-16 字符偏移，content.slice(start,end) 必须等于 quote。无法锚定时使用最相关短句。\n3. 检查因果、人物知识边界、连续性、节奏、情绪可信度、读者承诺和作品声音。\n4. 不把 AI 推断写成正典。依据不足时明确说明。\n5. suggestedAction 给出可执行方向，不要整段代写，除非作者明确要求。\n6. 如果没有值得打断作者的问题，返回空 comments，并在 summary 说明整体判断。\n7. explain 模式以解释原评论依据和适用边界为主，不重复制造无关问题；review 模式比较修改前后并用 reviewResult 判断 resolved、partial、unresolved 或 obsolete；其他模式使用 not-applicable。\n\n${context(input.contextPack)}\n\n## 不可变正文快照\n${snapshot.content}`;
+  const rules = [
+    '1. 只为真正有帮助的问题建评论，避免逐句吹毛求疵；普通建议不超过 5 条，阻塞问题优先。',
+    '2. quote 必须逐字复制自快照，start/end 使用 UTF-16 字符偏移，content.slice(start,end) 必须等于 quote。无法锚定时使用最相关短句。',
+    '3. 检查因果、人物知识边界、连续性、节奏、情绪可信度、读者承诺和作品声音。',
+    '4. 当正文新增或改写由早先事件汇总而来的场次/胜负、人数、金额/余额、时长/时间点、排名、版本、权限或“全部/为零”等状态时，不得只凭当前章和相邻章判定连续。使用 Agent 可用的只读仓库搜索，在正文、正典、规划和结构化事实中做有界溯源；依据找不到时标为未核实，不得自行发明新口径补洞。',
+    '5. 不把 AI 推断写成正典。依据不足时明确说明。',
+    '6. suggestedAction 给出可执行方向，不要整段代写，除非作者明确要求。',
+    '7. 如果没有值得打断作者的问题，返回空 comments，并在 summary 说明整体判断。',
+    '8. explain 模式以解释原评论依据和适用边界为主，不重复制造无关问题；review 模式比较修改前后并用 reviewResult 判断 resolved、partial、unresolved 或 obsolete；其他模式使用 not-applicable。'
+  ].join('\n');
+  return `你是独立的长篇网文 Observer。你只审查，不修改任何文件。请分析下面不可变快照，并严格输出符合给定 JSON Schema 的结果。\n\n快照信息：\n- snapshotId: ${snapshot.id}\n- filePath: ${snapshot.filePath}\n- hash: ${snapshot.hash}\n- editorVersion: ${snapshot.editorVersion}\n- mode: ${input.mode}\n${snapshot.selection ? `- selection: ${snapshot.selection.start}-${snapshot.selection.end}` : ''}\n${input.commentId ? `- 关联评论：${input.commentId}` : ''}\n${input.question ? `- 作者请求：${input.question}` : ''}\n\n规则：\n${rules}\n\n${context(input.contextPack)}\n\n## 不可变正文快照\n${snapshot.content}`;
 }
 
 export const OBSERVER_SCHEMA = {

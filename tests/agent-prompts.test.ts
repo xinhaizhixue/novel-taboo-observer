@@ -26,4 +26,18 @@ describe('Observer 通用审查边界', () => {
     expect(prompt).toContain('匿名界面、远程文件或他人口述不会自动成为');
     expect(prompt).toContain('能力边界或知识边界');
   });
+
+  it('遇到跨章汇总数据时要求只读溯源而不自造统计口径', () => {
+    const content = '近三十日战绩：四场两胜一负，医疗终止一场。';
+    const prompt = observerPrompt({
+      adapterId: 'codex',
+      mode: 'manual',
+      snapshot: { id: 'snapshot-continuity', filePath: 'manuscript/第五十一章.md', content, hash: hashText(content), editorVersion: 1, createdAt: '2026-08-30T00:00:00.000Z' }
+    });
+
+    expect(prompt).toContain('场次/胜负');
+    expect(prompt).toContain('只读仓库搜索');
+    expect(prompt).toContain('正文、正典、规划和结构化事实');
+    expect(prompt).toContain('不得自行发明新口径补洞');
+  });
 });
