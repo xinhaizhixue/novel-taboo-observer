@@ -11,7 +11,13 @@ import { ClaudeAdapter } from './claude.js';
 import { CodexAdapter } from './codex.js';
 import { NAVIGATION_SCHEMA, OBSERVER_SCHEMA, STYLE_SCHEMA, observerPrompt, taskPrompt } from './prompts.js';
 
-interface ActiveTask { process: ChildProcessWithoutNullStreams; record: AgentTaskRecord; adapter: AgentAdapter }
+interface ActiveTask {
+  process: ChildProcessWithoutNullStreams;
+  record: AgentTaskRecord;
+  adapter: AgentAdapter;
+  settled: Promise<void>;
+  sessionPersistence: Promise<void>;
+}
 
 function parseObject(value: string) {
   const trimmed = value.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
@@ -87,6 +93,22 @@ export class AgentHub {
   private emit(event: AgentEvent) { for (const listener of this.listeners) listener(event); }
   async list() { return Promise.all([...this.adapters.values()].map((adapter) => adapter.info())); }
 
+  private async verifiedTextFiles(files: string[]) {
+    const verified = [];
+    for (const file of [...new Set(files)]) {
+      try {
+        const read = await this.project.readFile(file);
+        verified.push({
+          path: file,
+          totalCharacters: read.content.length,
+          nonWhitespaceCharacters: read.content.replace(/\s/g, '').length,
+          hash: read.hash
+        });
+      } catch { /* Deleted or unsupported paths remain visible in changedFiles. */ }
+    }
+    return verified;
+  }
+
   private reserveWriter(taskId: string, scope: string[], ignoreTaskId?: string) {
     const activeCollision = [...this.active.entries()].find(([id, item]) => id !== ignoreTaskId && item.record.role === 'writer' && scopesOverlap(scope, item.record.scope));
     const startingCollision = [...this.startingWriters.entries()].find(([id, item]) => id !== ignoreTaskId && scopesOverlap(scope, item));
@@ -148,18 +170,33 @@ export class AgentHub {
     }
     await this.project.eventStore.append('agent.task', record as never, input.role === 'observer' ? 'observer' : 'agent');
     const isolatedReadOnly = ['observer', 'memory-curator', 'style-coach'].includes(input.role);
-    const run = adapter.run({ taskId: id, root: this.project.activeRoot, prompt, readOnly, schemaPath, outputPath, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(input.role) ? 300_000 : 180_000, reasoningEffort: reasoningEffortFor(input.role), ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(input.allowNetwork), recordRaw, emit: (event) => this.emit(event) });
-    this.active.set(id, { process: run.process, record, adapter });
+    let sessionPersistence = Promise.resolve();
+    let activeTask: ActiveTask | undefined;
+    const onSessionId = (sessionId: string) => {
+      if (record.sessionId === sessionId) return;
+      record.sessionId = sessionId;
+      const snapshot: AgentTaskRecord = { ...record, startHashes: { ...record.startHashes }, changedFiles: [...record.changedFiles] };
+      sessionPersistence = sessionPersistence.then(() => this.project.eventStore.append('agent.task', snapshot as never, input.role === 'observer' ? 'observer' : 'agent')).then(() => undefined).catch((error: Error) => {
+        this.emit({ taskId: id, type: 'error', at: now(), payload: `会话恢复标识保存失败：${error.message}` });
+      });
+      if (activeTask) activeTask.sessionPersistence = sessionPersistence;
+      this.emit({ taskId: id, type: 'state', at: now(), payload: { state: record.state, role: record.role, sessionId, phase: 'connected' } });
+    };
+    const run = adapter.run({ taskId: id, root: this.project.activeRoot, prompt, readOnly, schemaPath, outputPath, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(input.role) ? 300_000 : 180_000, reasoningEffort: reasoningEffortFor(input.role), ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(input.allowNetwork), recordRaw, onSessionId, emit: (event) => this.emit(event) });
+    activeTask = { process: run.process, record, adapter, settled: Promise.resolve(), sessionPersistence };
+    this.active.set(id, activeTask);
     this.startingWriters.delete(id);
     this.records.set(id, record);
     this.emit({ taskId: id, type: 'state', at: now(), payload: { state: 'running', role: input.role } });
-    run.completed.then(async (result) => {
+    const settled = run.completed.then(async (result) => {
+      await sessionPersistence;
       record.sessionId = result.sessionId;
       record.finalMessage = result.finalMessage.trim();
       record.endedAt = now();
       const endFiles = (await this.project.files()).map((file) => file.path);
       const endHashes = await this.project.hashFiles([...new Set([...startFiles, ...endFiles])]);
       record.changedFiles = Object.keys(endHashes).filter((file) => endHashes[file] !== baselineHashes[file]);
+      record.verifiedTextFiles = await this.verifiedTextFiles(record.changedFiles);
       const unauthorized = readOnly ? record.changedFiles : record.changedFiles.filter((file) => !allowedPath(file, input.scope));
       if (result.exitCode !== 0) {
         record.state = result.exitCode === 143 ? 'cancelled' : 'failed';
@@ -179,12 +216,14 @@ export class AgentHub {
       this.active.delete(id);
       this.emit({ taskId: id, type: record.state === 'failed' ? 'error' : 'state', at: now(), payload: { state: record.state, role: record.role, changedFiles: record.changedFiles, error: record.error ?? null } });
     }).catch(async (error: Error) => {
+      await sessionPersistence;
       record.state = 'failed'; record.error = error.message; record.endedAt = now();
       await this.project.eventStore.append('agent.task', record as never, 'agent');
       await this.syncCreativeTask(record);
       this.active.delete(id);
       this.emit({ taskId: id, type: 'error', at: now(), payload: error.message });
     });
+    activeTask.settled = settled;
     return record;
     } finally {
       this.startingWriters.delete(id);
@@ -232,11 +271,11 @@ export class AgentHub {
     const updated = {
       ...task,
       status: completed ? 'completed' as const : 'blocked' as const,
-      whyNow: completed ? task.whyNow : record.state === 'completed' ? 'Agent 已给出候选，等待作者选择后才能进入正式计划。' : `Agent ${record.state}，需要作者决定重试、接管或调整任务。`,
+      whyNow: task.whyNow,
       agentWork: record.finalMessage || record.error || task.agentWork,
       links: [...new Set([...task.links, ...record.changedFiles])],
       updatedAt: now(),
-      cancellationReason: ['cancelled', 'failed', 'interrupted'].includes(record.state) ? record.error || `Agent ${record.state}` : task.cancellationReason
+      cancellationReason: completed ? undefined : ['cancelled', 'failed', 'interrupted'].includes(record.state) ? record.error || `Agent ${record.state}` : task.cancellationReason
     };
     await this.project.eventStore.append('task.upsert', updated as never, 'agent');
   }
@@ -320,10 +359,12 @@ export class AgentHub {
     const task = this.active.get(taskId);
     if (!task) throw new Error('任务已经结束或不存在');
     task.record.state = 'cancelled'; task.record.endedAt = now(); task.record.error = '作者停止了任务；已有文件变化已保留供检查。';
+    await task.sessionPersistence;
     await this.project.eventStore.append('agent.task', task.record as never, 'author');
     await this.syncCreativeTask(task.record);
     task.process.kill('SIGTERM');
     this.emit({ taskId, type: 'state', at: now(), payload: { state: 'cancelled', role: task.record.role } });
+    await task.settled;
   }
 
   async cancelAll() { await Promise.all([...this.active.keys()].map((id) => this.cancel(id).catch(() => {}))); }
@@ -349,14 +390,28 @@ export class AgentHub {
     await this.project.eventStore.append('agent.task', record as never, 'agent');
     this.emit({ taskId, type: 'state', at: now(), payload: { state: 'running', role: record.role } });
     const isolatedReadOnly = ['observer', 'memory-curator', 'style-coach'].includes(record.role);
-    const run = adapter.run({ taskId, root: this.project.activeRoot, prompt: message, readOnly: !['writer', 'researcher'].includes(record.role), outputPath: path.join(directory, `final-${Date.now()}.txt`), sessionId: record.sessionId, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(record.role) ? 300_000 : 180_000, reasoningEffort: reasoningEffortFor(record.role), ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(record.allowNetwork), recordRaw, emit: (event) => this.emit(event) });
-    this.active.set(taskId, { process: run.process, record, adapter });
-    run.completed.then(async (result) => {
+    let sessionPersistence = Promise.resolve();
+    let activeTask: ActiveTask | undefined;
+    const onSessionId = (sessionId: string) => {
+      if (record.sessionId === sessionId) return;
+      record.sessionId = sessionId;
+      const snapshot: AgentTaskRecord = { ...record, startHashes: { ...record.startHashes }, changedFiles: [...record.changedFiles] };
+      sessionPersistence = sessionPersistence.then(() => this.project.eventStore.append('agent.task', snapshot as never, 'agent')).then(() => undefined).catch((error: Error) => {
+        this.emit({ taskId, type: 'error', at: now(), payload: `会话恢复标识保存失败：${error.message}` });
+      });
+      if (activeTask) activeTask.sessionPersistence = sessionPersistence;
+    };
+    const run = adapter.run({ taskId, root: this.project.activeRoot, prompt: message, readOnly: !['writer', 'researcher'].includes(record.role), outputPath: path.join(directory, `final-${Date.now()}.txt`), sessionId: record.sessionId, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(record.role) ? 300_000 : 180_000, reasoningEffort: reasoningEffortFor(record.role), ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(record.allowNetwork), recordRaw, onSessionId, emit: (event) => this.emit(event) });
+    activeTask = { process: run.process, record, adapter, settled: Promise.resolve(), sessionPersistence };
+    this.active.set(taskId, activeTask);
+    const settled = run.completed.then(async (result) => {
+      await sessionPersistence;
       const endFiles = (await this.project.files()).map((file) => file.path);
       const endHashes = await this.project.hashFiles([...new Set([...startFiles, ...endFiles])]);
       const changed = Object.keys(endHashes).filter((file) => endHashes[file] !== startHashes[file]);
       const unauthorized = record.role === 'writer' ? changed.filter((file) => !allowedPath(file, record.scope)) : changed;
       record.changedFiles = [...new Set([...record.changedFiles, ...changed])];
+      record.verifiedTextFiles = await this.verifiedTextFiles(record.changedFiles);
       record.state = result.exitCode === 143 ? 'cancelled' : result.exitCode !== 0 ? 'failed' : unauthorized.length ? 'awaiting-author' : 'completed';
       record.error = unauthorized.length ? `续接会话产生授权范围外变化：${unauthorized.join('、')}` : result.exitCode === 0 ? undefined : result.exitCode === 143 ? record.error || '作者停止了任务；已有文件变化已保留供检查。' : adapterFailure(result.exitCode, result.raw);
       record.finalMessage = result.finalMessage; record.endedAt = now(); record.sessionId = result.sessionId ?? record.sessionId;
@@ -368,12 +423,14 @@ export class AgentHub {
       this.active.delete(taskId);
       this.emit({ taskId, type: record.state === 'failed' ? 'error' : 'state', at: now(), payload: { state: record.state, role: record.role, changedFiles: changed, error: record.error ?? null } });
     }).catch(async (error: Error) => {
+      await sessionPersistence;
       record.state = 'failed'; record.error = error.message; record.endedAt = now();
       await this.project.eventStore.append('agent.task', record as never, 'agent');
       await this.syncCreativeTask(record);
       this.active.delete(taskId);
       this.emit({ taskId, type: 'error', at: now(), payload: { state: 'failed', role: record.role, error: error.message } });
     });
+    activeTask.settled = settled;
     } finally {
       this.startingWriters.delete(taskId);
     }

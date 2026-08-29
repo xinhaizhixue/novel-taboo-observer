@@ -20,6 +20,8 @@ export interface AdapterRunOptions {
   networkAccess?: boolean;
   /** Persist raw CLI output as it arrives so diagnostics survive a crash or forced stop. */
   recordRaw?: (line: string) => void;
+  /** Surface a resumable session as soon as the CLI announces it, before the process exits. */
+  onSessionId?: (sessionId: string) => void;
   emit: (event: AgentEvent) => void;
 }
 

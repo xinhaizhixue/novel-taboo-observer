@@ -74,7 +74,11 @@ export class ClaudeAdapter implements AgentAdapter {
       rememberRaw(line);
       try {
         const event = JSON.parse(line) as Record<string, unknown>;
-        sessionId = String(event.session_id ?? sessionId ?? '') || undefined;
+        const announcedSessionId = String(event.session_id ?? '') || undefined;
+        if (announcedSessionId && announcedSessionId !== sessionId) {
+          sessionId = announcedSessionId;
+          options.onSessionId?.(announcedSessionId);
+        }
         if (event.type === 'result') finalMessage = String(event.result ?? finalMessage);
         const payload = JSON.parse(JSON.stringify(event)) as JsonValue;
         const type: AgentEvent['type'] = event.type === 'assistant' ? 'message' : event.type === 'result' ? 'state' : 'raw';

@@ -118,7 +118,11 @@ export class CodexAdapter implements AgentAdapter {
       rememberRaw(line);
       try {
         const event = JSON.parse(line) as Record<string, unknown>;
-        sessionId = String(event.thread_id ?? event.session_id ?? sessionId ?? '') || undefined;
+        const announcedSessionId = String(event.thread_id ?? event.session_id ?? '') || undefined;
+        if (announcedSessionId && announcedSessionId !== sessionId) {
+          sessionId = announcedSessionId;
+          options.onSessionId?.(announcedSessionId);
+        }
         const type = String(event.type ?? 'raw');
         let mapped: AgentEvent['type'] = 'raw';
         if (type.includes('error') || type.includes('failed')) mapped = 'error';

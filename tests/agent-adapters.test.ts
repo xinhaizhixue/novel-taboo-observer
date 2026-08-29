@@ -45,6 +45,14 @@ function finish(prompt) {
     }, 50);
     return;
   }
+  if (prompt.includes('FAKE_SESSION_WAIT')) {
+    const target = path.join(process.cwd(), 'manuscript', '中断.md');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, '中断时也要保留正文');
+    ${kind === 'codex' ? `process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'fake-interrupted-session' }) + '\\n'); process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'file_change', status: 'completed', changes: [{ path: target, kind: 'add' }] } }) + '\\n');` : `process.stdout.write(JSON.stringify({ type: 'system', session_id: 'fake-interrupted-session' }) + '\\n');`}
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (prompt.includes('FAKE_WAIT')) { process.stderr.write('FAKE_WAIT_STARTED\\n'); setInterval(() => {}, 1000); return; }
   if (prompt.includes('FAKE_OBSERVER_JSON')) {
     const outputIndex = args.indexOf('-o');
@@ -200,6 +208,7 @@ describe('真实 CLI 子进程适配器', () => {
     expect(completed.changedFiles).toContain('manuscript/第一章.md');
     expect(Object.keys(completed.startHashes)).toEqual(['manuscript/第一章.md']);
     expect((await project.readFile('manuscript/第一章.md')).content).toContain('FAKE_AGENT_WRITE');
+    expect(completed.verifiedTextFiles).toEqual([expect.objectContaining({ path: 'manuscript/第一章.md', nonWhitespaceCharacters: 27 })]);
     expect(agentEvents.some((event) => event.type === 'file-change')).toBe(true);
     const positionAfterWriter = (await project.state()).continueCard;
     expect(positionAfterWriter.lastFile).toBe('manuscript/第一章.md');
@@ -260,5 +269,29 @@ describe('真实 CLI 子进程适配器', () => {
     const writerRuns = (await calls(logPath)).filter((call) => call.prompt.includes('FAKE_WAIT') && !call.prompt.includes('first observer'));
     expect(writerRuns.length).toBeGreaterThanOrEqual(2);
     expect(writerRuns.every((call) => call.args.join(' ').includes('model_reasoning_effort="medium"'))).toBe(true);
+
+    const recoveryCreativeTask = {
+      id: 'creative-recovery', title: '恢复中断正文', description: '验证中断恢复', level: 'chapter' as const, status: 'now' as const, kind: 'writing' as const, assignee: 'writer' as const, source: 'navigator' as const, priority: 'high' as const,
+      whyNow: '正文已经部分落盘，需要从同一会话继续。', known: [], missingDecisions: [], aiPreAnalysis: '', authorDecision: '', agentWork: '', completionCriteria: [], links: [], dependencies: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    };
+    await project.eventStore.append('task.upsert', recoveryCreativeTask as never, 'navigator');
+    const recoverable = await hub.runTask({ adapterId: 'codex', role: 'writer', objective: 'FAKE_SESSION_WAIT', creativeTaskId: recoveryCreativeTask.id, scope: ['manuscript/中断.md'], completionCriteria: [] });
+    const recoverableLog = path.join(appData, 'agents', project.activeManifest.projectId, recoverable.id, 'events.jsonl');
+    await waitForText(recoverableLog, 'fake-interrupted-session');
+    await hub.cancel(recoverable.id);
+    const interrupted = await waitForRecord(project, recoverable.id, ['cancelled']);
+    expect(interrupted.sessionId).toBe('fake-interrupted-session');
+    expect(interrupted.changedFiles).toContain('manuscript/中断.md');
+    expect(interrupted.verifiedTextFiles).toEqual([expect.objectContaining({ path: 'manuscript/中断.md', nonWhitespaceCharacters: 9 })]);
+    const blockedCreativeTask = (await project.state()).tasks.find((task) => task.id === recoveryCreativeTask.id);
+    expect(blockedCreativeTask).toMatchObject({ status: 'blocked', whyNow: recoveryCreativeTask.whyNow });
+    expect(blockedCreativeTask?.cancellationReason).toContain('作者停止');
+    await hub.sendMessage(recoverable.id, 'finish recovered task');
+    await waitForRecord(project, recoverable.id, ['completed']);
+    const completedCreativeTask = (await project.state()).tasks.find((task) => task.id === recoveryCreativeTask.id);
+    expect(completedCreativeTask).toMatchObject({ status: 'completed', whyNow: recoveryCreativeTask.whyNow });
+    expect(completedCreativeTask?.cancellationReason).toBeUndefined();
+    const recoveryCall = (await calls(logPath)).find((call) => call.prompt === 'finish recovered task');
+    expect(recoveryCall?.args).toContain('fake-interrupted-session');
   });
 });

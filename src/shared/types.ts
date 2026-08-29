@@ -260,6 +260,12 @@ export interface AgentAdapterInfo {
 }
 
 export type AgentTaskState = 'queued' | 'running' | 'awaiting-author' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+export interface AgentVerifiedTextFile {
+  path: string;
+  totalCharacters: number;
+  nonWhitespaceCharacters: number;
+  hash: string;
+}
 export interface AgentTaskRecord {
   id: string;
   adapterId: AgentAdapterInfo['id'];
@@ -275,6 +281,8 @@ export interface AgentTaskRecord {
   endedAt?: string;
   startHashes: Record<string, string>;
   changedFiles: string[];
+  /** Workbench-computed facts. Never trust an Agent's prose summary for these values. */
+  verifiedTextFiles?: AgentVerifiedTextFile[];
   finalMessage?: string;
   error?: string;
 }
