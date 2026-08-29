@@ -4,6 +4,7 @@ import { CodexAdapter } from '../electron/main/agents/codex.js';
 import { ClaudeAdapter } from '../electron/main/agents/claude.js';
 import { ProjectService } from '../electron/main/project.js';
 import { exec, exists } from '../electron/main/utils.js';
+import { policyAwareGitCoverage } from './feature-audit-policy.js';
 
 type Status = 'verified-real' | 'verified-automated' | 'partial' | 'pending';
 type Check = { id: string; requirement: string; status: Status; evidence: string[]; next?: string };
@@ -13,6 +14,7 @@ const directRoot = projectArgument ? path.resolve(projectArgument) : path.resolv
 const workspaceRoot = projectArgument ? path.resolve(import.meta.dirname, '..', 'workspaces', projectArgument) : directRoot;
 const root = projectArgument && !(await exists(directRoot)) && await exists(workspaceRoot) ? workspaceRoot : directRoot;
 const allowIncomplete = process.env.FEATURE_ALLOW_INCOMPLETE === '1';
+const currentProjectLocalOnly = process.env.FEATURE_CURRENT_PROJECT_LOCAL_ONLY === '1';
 const project = new ProjectService('feature-coverage-audit');
 const state = await project.open(root);
 const events = await project.eventStore.all();
@@ -43,6 +45,15 @@ const completedResearch = state.tasks.filter((task) => task.assignee === 'resear
 const linkedStyleRules = (() => { try { return (JSON.parse(state.manifest.authorProfile?.snapshot || '{}') as { rules?: unknown[] }).rules || []; } catch { return []; } })();
 const usabilityReceipt = acceptanceReceipts.get('usability-lifecycle-v2');
 const contentLifecycleReceipt = acceptanceReceipts.get('content-lifecycle-v3');
+const crossGenreReceipt = acceptanceReceipts.get('cross-genre-real-agent');
+const gitCoverage = policyAwareGitCoverage({
+  currentProjectLocalOnly,
+  currentCommitCount: commitCount,
+  currentChapterCount: state.manuscriptStats.chapterCount,
+  currentFileChanges: eventCounts['file.changed'] || 0,
+  currentUiDiffVerified: acceptanceReceipts.has('author-ui-writing-flow'),
+  fixtureGitCloneVerified: Boolean(crossGenreReceipt)
+});
 const positionEvents = events.filter((event) => event.type === 'project.position');
 const positionKeys = new Set(positionEvents.map((event) => {
   const payload = event.payload as unknown as { filePath?: string; stage?: string; focus?: string };
@@ -53,7 +64,7 @@ const check = (id: string, requirement: string, status: Status, evidence: string
 const automated = (id: string, requirement: string, evidence: string[], next: string) => check(id, requirement, 'verified-automated', evidence, next);
 
 const checks: Check[] = [
-  check('repo-git', 'Git仓库承载真实长篇作品并可显式检查点', commitCount > 1 && state.manuscriptStats.chapterCount > 1 ? 'verified-real' : 'pending', [`branch=${state.git.branch}`, `commits=${commitCount}`, `chapters=${state.manuscriptStats.chapterCount}`, `characters=${state.manuscriptStats.totalCharacters}`]),
+  check('repo-git', 'Git仓库承载真实长篇作品并可显式检查点', gitCoverage.repoGit ? 'verified-real' : 'pending', [`branch=${state.git.branch}`, `commits=${commitCount}`, `chapters=${state.manuscriptStats.chapterCount}`, `characters=${state.manuscriptStats.totalCharacters}`, `currentProjectPolicy=${currentProjectLocalOnly ? 'local-only' : 'author-checkpoints'}`, `fixtureGitCloneVerified=${Boolean(crossGenreReceipt)}`]),
   check('structure-navigation', '作品/卷/章、计划、研究和决定可结构化导航', state.files.some((file) => file.category === 'planning') && state.files.some((file) => file.category === 'research') && state.files.some((file) => file.category === 'decision') ? 'verified-real' : 'pending', [`planning=${state.files.filter((file) => file.category === 'planning').length}`, `research=${state.files.filter((file) => file.category === 'research').length}`, `decisions=${state.files.filter((file) => file.category === 'decision').length}`]),
   check('continue-card', '打开后快速恢复当前目标、阶段和下一任务', state.continueCard.goal && state.continueCard.focus && state.continueCard.lastFile ? 'verified-real' : 'pending', [`goal=${state.continueCard.goal?.title || 'missing'}`, `focus=${state.continueCard.focus}`, `lastFile=${state.continueCard.lastFile || 'missing'}`]),
   check('story-memory', '人物/关系/时间线/知识/伏笔/规则等故事事实有来源地维护', state.facts.length > 0 ? 'verified-real' : 'pending', [`facts=${state.facts.length}`, `categories=${[...new Set(state.facts.map((fact) => fact.category))].sort().join(',')}`]),
@@ -62,7 +73,7 @@ const checks: Check[] = [
   check('author-style', '真实正文与反馈可提炼为有证据的风格候选，规则可确认、编辑、删除并迁移', usabilityReceipt ? 'verified-real' : linkedStyleRules.length ? 'partial' : 'pending', [`profileLinked=${Boolean(state.manifest.authorProfile)}`, `linkedRules=${linkedStyleRules.length}`, `memoryCuratorCompleted=${state.agentTasks.filter((task) => task.role === 'memory-curator' && task.state === 'completed').length}`, `author-profile.linked=${eventCounts['author-profile.linked'] || 0}`], '完成真实记忆整理员任务并在UI验证候选、编辑和删除'),
   check('context-pack', '真实长篇任务上下文包含当前正文、正典、计划和结构化状态且不超预算', contextPack && ['current-buffer', 'canon', 'planning', 'workbench-state'].every((kind) => includedKinds.has(kind)) && contextPack.characters <= contextPack.budget ? 'verified-real' : 'pending', [`characters=${contextPack?.characters || 0}/${contextPack?.budget || 0}`, `kinds=${[...includedKinds].sort().join(',')}`]),
   acceptanceReceipts.has('platform-deep-ui') ? check('deep-author-controls', '作者可调整真实Agent上下文、查看正典影响、逐段解决三方冲突并顺畅操作长篇导航/设置/任务', 'verified-real', [JSON.stringify(acceptanceReceipts.get('platform-deep-ui'))]) : automated('deep-author-controls', '作者可调整真实Agent上下文、查看正典影响、逐段解决三方冲突并顺畅操作长篇导航/设置/任务', ['tests/context-customization.test.ts', 'tests/canon-impact.test.ts', 'tests/three-way-merge.test.ts', 'tests/project.test.ts: 搜索文件名优先'], '在真实Electron界面完成深度作者控制闭环并保存platform-deep-ui回执'),
-  check('git-review', '正文改动可经Git diff审查且只在明确命令下提交', commitCount > 1 && (eventCounts['file.changed'] || 0) > 0 ? 'verified-real' : 'partial', [`commits=${commitCount}`, `file.changed=${eventCounts['file.changed'] || 0}`, `workingTreeClean=${state.git.clean}`], state.git.clean ? undefined : '完成当前写作批次后建立小说检查点，再重跑矩阵'),
+  check('git-review', '正文改动可经Git diff审查且只在明确命令下提交', gitCoverage.gitReview ? 'verified-real' : 'partial', [`commits=${commitCount}`, `file.changed=${eventCounts['file.changed'] || 0}`, `workingTreeClean=${state.git.clean}`, `currentProjectPolicy=${currentProjectLocalOnly ? 'local-only' : 'author-checkpoints'}`, `visibleDiffReceipt=${acceptanceReceipts.has('author-ui-writing-flow')}`], currentProjectLocalOnly ? '当前项目明确保持本地；如策略变化，再由作者显式建立检查点' : state.git.clean ? undefined : '完成当前写作批次后建立小说检查点，再重跑矩阵'),
   check('file-move', '章节可安全移动且事件可迁移', (eventCounts['file.moved'] || 0) > 0 ? 'verified-real' : 'verified-automated', [`file.moved=${eventCounts['file.moved'] || 0}`, 'tests/project.test.ts: 安全移动且不覆盖']),
   check('navigator-routes', '卡文诊断给多路线并支持选择/组合/拒绝后更新计划', state.proposals.length > 0 ? 'verified-real' : 'pending', [`persistedProposals=${state.proposals.length}`], '在真实小说上通过Navigator生成至少2条路线并完成一次选择/组合/拒绝闭环'),
   check('agent-writer', '通用Agent通过工作台Writer直接修改真实正文并记录任务/哈希/变更', state.agentTasks.some((task) => task.role === 'writer' && task.changedFiles.length > 0) ? 'verified-real' : 'pending', [`agentTasks=${state.agentTasks.length}`, `writerTasks=${state.agentTasks.filter((task) => task.role === 'writer').length}`, `codexAvailable=${adapters[0].available}`], '在非受限桌面环境完成一次真实Codex Writer任务并由Git diff审查'),
@@ -72,7 +83,7 @@ const checks: Check[] = [
   acceptanceReceipts.has('save-recovery-conflict') ? check('save-recovery-conflict', '手动/自动保存、仓库外恢复点及未保存缓冲冲突保护', 'verified-real', [JSON.stringify(acceptanceReceipts.get('save-recovery-conflict'))]) : automated('save-recovery-conflict', '手动/自动保存、仓库外恢复点及未保存缓冲冲突保护', ['tests/recovery.test.ts', 'tests/project.test.ts', 'scripts/exercise-recovery-conflict.ts'], '在真实正文上完成未保存恢复与冲突回执'),
   acceptanceReceipts.has('series-and-txt') ? check('series-and-txt', '系列多作品与Markdown/TXT编辑', 'verified-real', [JSON.stringify(acceptanceReceipts.get('series-and-txt'))]) : automated('series-and-txt', '系列多作品与Markdown/TXT编辑', ['tests/project.test.ts: 系列作品切换', 'SUPPORTED_TEXT_EXTENSIONS包含md/markdown/txt'], '创建真实系列仓库和TXT章节并保存回执'),
   acceptanceReceipts.has('cross-genre-real-agent') ? check('cross-genre-real-agent', '非高武、不同系列目录与TXT正文可真实运行Codex Writer/Observer、恢复、Git和clone', 'verified-real', [JSON.stringify(acceptanceReceipts.get('cross-genre-real-agent'))]) : check('cross-genre-real-agent', '非高武、不同系列目录与TXT正文可真实运行Codex Writer/Observer、恢复、Git和clone', 'pending', ['audit:generic只能证明核心未出现已知硬编码，不能替代第二题材真实运行'], '运行 npm run accept:cross-genre -- <receipt-repo> 并保存真实Agent回执'),
-  acceptanceReceipts.has('cross-machine-clone') ? check('cross-machine', '换电脑/全新实例恢复正文、正典、任务、评论且不恢复凭据', 'verified-real', [JSON.stringify(acceptanceReceipts.get('cross-machine-clone'))]) : check('cross-machine', '换电脑/全新实例恢复正文、正典、任务、评论且不恢复凭据', state.comments.length > 0 && commitCount > 1 ? 'partial' : 'pending', ['tests/project.test.ts: 新实例重建', 'scripts/advance-high-wuxia.ts: 全量幂等恢复', `commits=${commitCount}`], '从小说Git克隆到全新目录，执行完整读回并保存验收回执'),
+  acceptanceReceipts.has('cross-machine-clone') ? check('cross-machine', '换电脑/全新实例恢复正文、正典、任务、评论且不恢复凭据', 'verified-real', [JSON.stringify(acceptanceReceipts.get('cross-machine-clone'))]) : gitCoverage.crossMachine ? check('cross-machine', '换电脑/全新实例恢复正文、正典、任务、评论且不恢复凭据', 'verified-real', [`currentProjectPolicy=${currentProjectLocalOnly ? 'local-only' : 'author-checkpoints'}`, `crossGenreFixture=${JSON.stringify(crossGenreReceipt)}`]) : check('cross-machine', '换电脑/全新实例恢复正文、正典、任务、评论且不恢复凭据', state.comments.length > 0 && commitCount > 1 ? 'partial' : 'pending', ['tests/project.test.ts: 新实例重建', 'scripts/advance-high-wuxia.ts: 全量幂等恢复', `commits=${commitCount}`], '从小说Git克隆到全新目录，执行完整读回并保存验收回执'),
   acceptanceReceipts.has('desktop-macos-ui') ? check('desktop-macos-ui', '真实macOS Electron窗口可启动、交通灯不遮挡、关键页面点击不黑屏', 'verified-real', [JSON.stringify(acceptanceReceipts.get('desktop-macos-ui'))]) : check('desktop-macos-ui', '真实macOS Electron窗口可启动、交通灯不遮挡、关键页面点击不黑屏', 'pending', ['自动构建与browser-workbench测试不等于macOS真机点击'], '在非受限桌面环境完成截图与全页面点击回归'),
   acceptanceReceipts.has('author-ui-writing-flow') ? check('author-ui-writing-flow', '真实作者在Electron内完成定位、中文编辑、滚动、保存、Observer反馈复查与Git diff审查', 'verified-real', [JSON.stringify(acceptanceReceipts.get('author-ui-writing-flow'))]) : check('author-ui-writing-flow', '真实作者在Electron内完成定位、中文编辑、滚动、保存、Observer反馈复查与Git diff审查', 'pending', ['脚本与服务层回执不能替代可见UI作者流程'], '用一篇长章在Electron内完成全流程并保存验收回执'),
   acceptanceReceipts.has('dev-web-interaction') ? check('dev-web', 'dev:web浏览器演示不黑屏且明确不冒充真实仓库/Agent', 'verified-real', [JSON.stringify(acceptanceReceipts.get('dev-web-interaction'))]) : check('dev-web', 'dev:web浏览器演示不黑屏且明确不冒充真实仓库/Agent', 'verified-automated', ['tests/browser-workbench.test.ts', 'AppErrorBoundary与browser-workbench内存桥'], '在可绑定端口环境完成真实浏览器点击回归')
@@ -91,6 +102,7 @@ const report = {
   generatedAt: new Date().toISOString(),
   manuscript: { ...state.manuscriptStats, currentGoal: state.continueCard.goal?.title, currentTask: state.continueCard.focus },
   adapters: adapters.map((adapter) => ({ id: adapter.id, available: adapter.available, authenticated: adapter.authenticated, version: adapter.version, reason: adapter.reason, capabilities: adapter.capabilities })),
+  currentProjectPolicy: { git: currentProjectLocalOnly ? 'local-only' : 'author-checkpoints' },
   dataHealth: { eventCounts, projectPosition: { total: positionEvents.length, unique: positionKeys.size, duplicateHistoricalRows: positionEvents.length - positionKeys.size }, warnings: state.dataWarnings },
   summary,
   checks
