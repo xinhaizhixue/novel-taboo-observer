@@ -10,6 +10,7 @@ import { Editor, MarkdownPreview } from '@/components/Editor';
 import { HelpPanel } from '@/components/HelpPanel';
 import { currentTaskForAgent, suggestedObjectiveForAgent } from '@/lib/agent-task';
 import { commentNeedsAction, commentStatusLabel, partitionObserverComments } from '@/lib/comments';
+import { fileCharacterLabel } from '@/lib/file-labels';
 import { addAuthorContextNote, setContextItemIncluded } from '@/lib/context-pack';
 import { mergeThreeWay, renderThreeWayMerge, type MergeChoice } from '@/lib/three-way-merge';
 import { characters, errorMessage, fileTitle, relativeTime, sha256 } from '@/lib/format';
@@ -441,6 +442,7 @@ export default function App() {
   const activeWriter = project.agentTasks.find((task) => task.state === 'running' && task.role === 'writer' && buffer && task.scope.some((scope) => buffer.path === scope || buffer.path.startsWith(`${scope}/`)));
   const contextualComments = buffer ? comments.filter((comment) => comment.anchor.filePath === buffer.path) : comments;
   const rightCommentCount = partitionObserverComments(contextualComments).actionable.length;
+  const activeBufferFile = buffer ? project.files.find((file) => file.path === buffer.path) : undefined;
   const saveLabel: Record<SaveState, string> = { saved: '已保存', dirty: '未保存', saving: '正在保存', 'agent-editing': 'Agent 正在修改', 'observer-running': 'Observer 分析中', 'stale-analysis': '分析结果已过期', conflict: '存在冲突' };
   const moveProjectFile = (file: ProjectFile) => {
     if (buffer?.path === file.path && buffer.state !== 'saved') { setNotice({ kind: 'info', text: '当前文件还有未保存内容，请先保存再移动。' }); return; }
@@ -528,7 +530,7 @@ export default function App() {
         <button className={observer.active ? 'observer-on' : ''} onClick={() => { setRightOpen(true); setRightTab('comments'); }}><Eye size={13} /> Observer {observer.active ? `已开启 · ${observer.count}/${observer.budget}` : '已关闭'}</button>
         <span className="status-spacer" />
         <span>全书 {project.manuscriptStats.totalCharacters.toLocaleString()} 字</span>
-        <span>{buffer ? `本章 ${characters(buffer.content).toLocaleString()} 字` : ''}</span>
+        <span>{buffer ? `${fileCharacterLabel(activeBufferFile?.category)} ${characters(buffer.content).toLocaleString()} 字` : ''}</span>
       </footer>
 
       {fileCreate && <Modal title={`新建${fileCreate.category === 'manuscript' ? '正文' : fileCreate.category === 'planning' ? '大纲与剧情' : fileCreate.category === 'research' ? '研究资料' : fileCreate.category === 'canon' ? '人物与世界' : '决定'}`} onClose={() => setFileCreate(null)}><form onSubmit={(event) => { event.preventDefault(); if (!fileCreate.submitting) void submitCreateFile(String(new FormData(event.currentTarget).get('path') || '')); }}><p className="modal-lead">输入仓库内的文件名或相对目录。默认沿用当前分卷；支持 Markdown 与 TXT，绝不会覆盖同名文件。</p><label>文件名或相对路径<input name="path" autoFocus value={fileCreate.name} onChange={(event) => setFileCreate({ ...fileCreate, name: event.target.value, error: '' })} placeholder="例如：第一卷/第002章-新的转折.md" /></label>{fileCreate.error && <p className="form-error">{fileCreate.error}</p>}<div className="modal-actions"><button type="button" onClick={() => setFileCreate(null)}>取消</button><button type="submit" className="primary" disabled={fileCreate.submitting}>{fileCreate.submitting ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />}{fileCreate.submitting ? '正在创建…' : '创建并打开'}</button></div></form></Modal>}
