@@ -9,6 +9,7 @@ import {
 import { Editor, MarkdownPreview } from '@/components/Editor';
 import { HelpPanel } from '@/components/HelpPanel';
 import { currentTaskForAgent, suggestedObjectiveForAgent } from '@/lib/agent-task';
+import { commentNeedsAction, commentStatusLabel, partitionObserverComments } from '@/lib/comments';
 import { addAuthorContextNote, setContextItemIncluded } from '@/lib/context-pack';
 import { mergeThreeWay, renderThreeWayMerge, type MergeChoice } from '@/lib/three-way-merge';
 import { characters, errorMessage, fileTitle, relativeTime, sha256 } from '@/lib/format';
@@ -44,12 +45,6 @@ const NAVIGATION: Array<{ id: View; label: string; icon: typeof BookOpen }> = [
 const JOURNEY = ['灵感与创作意图', '题材、读者期待和故事承诺', '主角、核心冲突和长期故事发动机', '最小可开书设定', '开篇和前三章', '当前卷和近期剧情', '逐章创作、观察和修订', '分卷收束和下一卷启动', '完结、全书修订和发布准备'];
 const DeferredGitDiffViewer = lazy(() => import('@/components/GitDiffViewer').then((module) => ({ default: module.GitDiffViewer })));
 function GitDiffViewer({ versions }: { versions: GitFileVersions }) { return <Suspense fallback={<div className="diff-empty"><LoaderCircle className="spin" /><b>正在加载差异阅读器…</b></div>}><DeferredGitDiffViewer versions={versions} /></Suspense>; }
-function commentNeedsAction(comment: ObserverComment) {
-  if (['resolved', 'rejected', 'intentional', 'obsolete'].includes(comment.status)) return false;
-  if (comment.status !== 'stale') return true;
-  return comment.reviewCount === 0 && comment.messages.some((message) => message.source === 'author');
-}
-
 export default function App() {
   const api = window.workbench;
   const browserPreview = String(api.platform) === 'browser';
@@ -445,7 +440,7 @@ export default function App() {
 
   const activeWriter = project.agentTasks.find((task) => task.state === 'running' && task.role === 'writer' && buffer && task.scope.some((scope) => buffer.path === scope || buffer.path.startsWith(`${scope}/`)));
   const contextualComments = buffer ? comments.filter((comment) => comment.anchor.filePath === buffer.path) : comments;
-  const rightCommentCount = contextualComments.filter(commentNeedsAction).length;
+  const rightCommentCount = partitionObserverComments(contextualComments).actionable.length;
   const saveLabel: Record<SaveState, string> = { saved: '已保存', dirty: '未保存', saving: '正在保存', 'agent-editing': 'Agent 正在修改', 'observer-running': 'Observer 分析中', 'stale-analysis': '分析结果已过期', conflict: '存在冲突' };
   const moveProjectFile = (file: ProjectFile) => {
     if (buffer?.path === file.path && buffer.state !== 'saved') { setNotice({ kind: 'info', text: '当前文件还有未保存内容，请先保存再移动。' }); return; }
@@ -1008,7 +1003,7 @@ function LegacyCommentsPanel({ comments, running, canCancel, error, active, coun
 }
 
 function CommentsPanel({ comments, running, canCancel, canAnalyze, error, active, count, budget, agents, adapter, onAdapter, onToggle, onAnalyze, onCancel, onSelect, onFeedback, onSendWriter }: { comments: ObserverComment[]; running: boolean; canCancel: boolean; canAnalyze: boolean; error: string | null; active: boolean; count: number; budget: number; agents: AgentAdapterInfo[]; adapter: AgentAdapterInfo['id']; onAdapter(value: AgentAdapterInfo['id']): void; onToggle(): void; onAnalyze(): void; onCancel(): void; onSelect(comment: ObserverComment): void; onFeedback(comment: ObserverComment, action: 'accept' | 'reject' | 'defer' | 'review' | 'explain' | 'intentional', reason?: string): Promise<void>; onSendWriter(comment: ObserverComment): Promise<void> }) {
-  const visible = comments.filter(commentNeedsAction);
+  const { actionable: visible, history } = partitionObserverComments(comments);
   const [rejecting, setRejecting] = useState<ObserverComment | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [rejectingBusy, setRejectingBusy] = useState(false);
@@ -1023,9 +1018,26 @@ function CommentsPanel({ comments, running, canCancel, canAnalyze, error, active
     <select className="observer-adapter" value={adapter} onChange={(event) => onAdapter(event.target.value as AgentAdapterInfo['id'])}>{agents.map((agent) => <option key={agent.id} value={agent.id} disabled={!agent.available}>{agent.name}{agent.available ? '' : '（不可用）'}</option>)}</select>
     {error && <div className="observer-run-error"><CircleAlert size={14} /><span><b>上次检查未完成</b>{error}</span></div>}
     <button className={`manual-check ${running ? 'is-cancel' : ''}`} disabled={!canAnalyze || (running && !canCancel)} onClick={running ? onCancel : onAnalyze}>{running ? (canCancel ? <Square size={16} /> : <LoaderCircle className="spin" size={16} />) : <Eye size={16} />}{!canAnalyze ? '先打开正文' : running ? (canCancel ? '停止本次检查' : '正在启动 Observer…') : error ? '重试检查' : '立即检查当前正文'}</button>
+    {!visible.length && history.length ? <CommentHistory comments={history} onSelect={onSelect} defaultOpen /> : null}
     {visible.length ? visible.map((comment) => <article className={`comment-card severity-${comment.severity} status-${comment.status}`} key={comment.id} onClick={() => onSelect(comment)}><div className="comment-meta"><span>{comment.issueType}</span><b>{comment.severity === 'blocking' ? '阻塞' : comment.severity === 'warning' ? '注意' : '建议'}</b></div><h4>{comment.summary}</h4><blockquote>{comment.anchor.quote}</blockquote><p>{comment.evidence}</p><div className="suggested-action"><WandSparkles size={14} />{comment.suggestedAction}</div>{comment.messages.length > 1 && <div className="comment-thread">{comment.messages.slice(1).map((message) => <p key={message.id}><b>{message.source === 'author' ? '作者' : 'Observer'}</b>{message.body}</p>)}</div>}{comment.status === 'stale' && <div className="stale-note">基于旧版本；原文字已变化，不挂到当前文字。</div>}<div className="comment-actions" onClick={(event) => event.stopPropagation()}>{comment.severity === 'blocking' && <button className="send-writer" onClick={() => void onSendWriter(comment)}><Bot size={12} />发回 Writer</button>}<button onClick={() => void onFeedback(comment, 'accept')}>接受</button><button onClick={() => { setRejecting(comment); setRejectReason(''); }}>拒绝</button><button onClick={() => void onFeedback(comment, 'defer')}>暂缓</button><button onClick={() => void onFeedback(comment, 'explain')}>要求解释</button><button onClick={() => void onFeedback(comment, 'review')}>修改后复查</button><button onClick={() => void onFeedback(comment, 'intentional')}>有意保留</button></div></article>) : <div className="panel-empty"><MessageSquareText size={28} /><b>还没有当前章节评论</b><span>Observer 会在停顿后分析，也可以立即检查。</span></div>}
+    {visible.length && history.length ? <CommentHistory comments={history} onSelect={onSelect} /> : null}
     {rejecting && <Modal title="拒绝 Observer 建议" onClose={() => setRejecting(null)}><form onSubmit={(event) => { event.preventDefault(); void submitReject(String(new FormData(event.currentTarget).get('reason') || '')); }}><p className="modal-lead">拒绝不会改正文。补充原因可以帮助后续 Observer 区分你的写法、刻意保留和真正误报。</p><label>拒绝原因（可选）<textarea name="reason" autoFocus value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="例如：这是有意制造的信息差，下一章会回收。" /></label><div className="modal-actions"><button type="button" onClick={() => setRejecting(null)}>取消</button><button type="submit" className="primary" disabled={rejectingBusy}>{rejectingBusy ? '正在记录…' : '确认拒绝'}</button></div></form></Modal>}
   </div>;
+}
+
+function CommentHistory({ comments, onSelect, defaultOpen = false }: { comments: ObserverComment[]; onSelect(comment: ObserverComment): void; defaultOpen?: boolean }) {
+  return <details className="comment-history" open={defaultOpen}>
+    <summary><span><History size={13} />已处理与过期</span><b>{comments.length}</b></summary>
+    <div>{comments.map((comment) => {
+      const lastMessage = comment.messages.at(-1);
+      return <button type="button" className={`comment-history-card status-${comment.status}`} key={comment.id} onClick={() => onSelect(comment)}>
+        <span className="comment-history-meta"><em>{commentStatusLabel(comment.status)}</em><small>{comment.reviewCount ? `已复查 ${comment.reviewCount} 次` : relativeTime(comment.updatedAt)}</small></span>
+        <strong>{comment.summary}</strong>
+        <q>{comment.anchor.quote}</q>
+        <span className="comment-history-result">{lastMessage?.body || comment.evidence}</span>
+      </button>;
+    })}</div>
+  </details>;
 }
 
 function suggestedAgentRole(filePath?: string): AgentRole {

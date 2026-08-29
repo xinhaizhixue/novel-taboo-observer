@@ -435,6 +435,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .comment-actions button { border: 0; background: transparent; color: var(--accent-2); padding: 4px 6px; font-size: 10px; cursor: pointer; }
 .comment-actions button:hover { background: #eee6d9; }
 .stale-note { margin-top: 7px; color: var(--warning); font-size: 9px; }
+.comment-history { margin: 4px 0 12px; border: 1px solid #d7d0c4; border-radius: 6px; background: #e9e4da; overflow: hidden; }
+.comment-history + .panel-empty { display: none; }
+.comment-history > summary { display: flex; align-items: center; justify-content: space-between; padding: 9px 10px; color: #655f56; font-size: 10px; cursor: pointer; list-style: none; }
+.comment-history > summary::-webkit-details-marker { display: none; }
+.comment-history > summary span { display: flex; align-items: center; gap: 5px; font-weight: 600; }
+.comment-history > summary b { min-width: 20px; padding: 1px 5px; border-radius: 8px; background: #d5cec1; text-align: center; font-size: 9px; }
+.comment-history > div { display: grid; gap: 6px; padding: 0 7px 7px; }
+.comment-history-card { width: 100%; border: 1px solid #d8d1c5; border-radius: 5px; background: #f7f4ed; padding: 9px; color: var(--ink); text-align: left; cursor: pointer; }
+.comment-history-card:hover { border-color: #bfb4a4; background: #fbf9f4; }
+.comment-history-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.comment-history-meta em { border-radius: 8px; background: #dfe7dc; padding: 2px 6px; color: #52654f; font-size: 8px; font-style: normal; }
+.comment-history-card.status-rejected .comment-history-meta em, .comment-history-card.status-intentional .comment-history-meta em { background: #e7ddd2; color: #765b47; }
+.comment-history-card.status-stale .comment-history-meta em, .comment-history-card.status-obsolete .comment-history-meta em { background: #e5e1db; color: #777067; }
+.comment-history-meta small { color: var(--muted); font-size: 8px; }
+.comment-history-card strong, .comment-history-card q, .comment-history-result { display: block; }
+.comment-history-card strong { margin-top: 6px; font-size: 10px; line-height: 1.4; }
+.comment-history-card q { margin-top: 5px; overflow: hidden; color: #777067; font: 400 9px/1.45 'Noto Serif SC'; text-overflow: ellipsis; white-space: nowrap; }
+.comment-history-result { margin-top: 5px; color: #655f56; font-size: 9px; line-height: 1.45; }
 .panel-empty { min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); padding: 25px; }
 .panel-empty b { color: var(--ink); font-size: 12px; margin: 10px 0 4px; }
 .panel-empty span { font-size: 10px; line-height: 1.5; }
