@@ -1,0 +1,21 @@
+import path from 'node:path';
+import os from 'node:os';
+import { mkdtemp } from 'node:fs/promises';
+import { AuthorProfileStore } from '../electron/main/profile.js';
+import { ProjectService } from '../electron/main/project.js';
+
+const root = path.resolve(process.argv[2] || path.join(import.meta.dirname, '..', 'workspaces', 'wan-jie-zhu-shen'));
+const firstData = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-style-source-'));
+const secondData = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-style-target-'));
+const first = new AuthorProfileStore(firstData);
+let profile = await first.upsert({ category: 'voice', text: '战斗规则优先通过落脚、发力、伤势与选择展示，避免旁白直接宣布克制关系。', status: 'candidate', evidence: ['第007章拆解九叠崩峰左脚支点', '第006章以活动钢板展示协作规则'] });
+const rule = profile.rules.find((item) => item.status === 'candidate')!;
+profile = await first.upsert({ id: rule.id, status: 'confirmed' });
+await first.upsert({ category: 'improvement', text: '评分、赛制和临时机制必须在兑现前出现可验证铺垫。', status: 'confirmed', evidence: ['第006章 Observer 复查', '动态权重提前声明'] });
+const exported = path.join(firstData, '万劫铸身-作者风格.json');
+await first.exportFile(exported);
+const imported = await new AuthorProfileStore(secondData).importFile(exported);
+const project = new ProjectService('style-profile-e2e');
+await project.open(root);
+await project.linkAuthorProfile(imported);
+process.stdout.write(`${JSON.stringify({ profileId: imported.id, confirmedRules: imported.rules.filter((item) => item.status === 'confirmed').map((item) => item.text), exportImportPreserved: imported.rules.length === (await first.get()).rules.length, repositorySnapshotLinked: Boolean((await project.state()).manifest.authorProfile?.snapshot) }, null, 2)}\n`);

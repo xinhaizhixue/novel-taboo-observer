@@ -1,0 +1,26 @@
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { ProjectService } from '../electron/main/project.js';
+import { makeAnchor } from '../electron/main/observer.js';
+import { hashText, now, uid } from '../electron/main/utils.js';
+import type { CreativeTask, ObserverComment, StoryFact } from '../src/shared/types.js';
+
+const root = process.argv[2] ? path.resolve(process.argv[2]) : await mkdtemp(path.join(os.tmpdir(), 'novel-observer-demo-'));
+const project = new ProjectService('demo-session');
+await project.create({ root, title: '雾城来信', kind: 'novel', idea: '死者会在雨夜寄回一封信，但收信人必须替死者完成最后一个谎言。' });
+const chapter = `# 第一章 雨夜来信\n\n雨从傍晚下到午夜，顾临川送完最后一单，才发现车筐里多了一封没有邮票的信。\n\n信封被雨淋得发软，收件人却写着他的名字。墨迹很新，像有人刚在他背后写完。\n\n他没有立刻拆。三年前母亲失踪后，他见过太多用神秘兜售希望的骗子。可当他翻过信封，指腹碰到那枚暗红色火漆时，呼吸还是停了一拍。\n\n那是母亲生前刻坏的印章：一只少了左眼的渡鸦。\n\n巷口的路灯忽然熄灭。\n\n顾临川抬头，看见雨幕里站着一个穿白裙的女孩。她没有打伞，头发和裙摆却都是干的。\n\n“别拆。”女孩说，“至少别在十二点以后拆。”\n\n他的手机亮了一下。零点零一分。\n\n信封里传来纸张自行折叠的细响。\n`;
+const before = await project.readFile('manuscript/第一章.md');
+await project.writeFile(before.path, chapter, before.hash);
+const fact: StoryFact = { id: uid('fact'), category: 'character', subject: '顾临川', statement: '外卖员；母亲于三年前失踪；对神秘说法保持警惕。', status: 'text-explicit', evidence: [{ filePath: 'manuscript/第一章.md', quote: '三年前母亲失踪后，他见过太多用神秘兜售希望的骗子。' }], updatedAt: now() };
+await project.eventStore.append('fact.upsert', fact as never, 'system');
+const knowledge: StoryFact = { id: uid('fact'), category: 'knowledge', subject: '顾临川', statement: '只知道信件使用母亲的残缺渡鸦印章，尚不知道寄信规则。', status: 'text-explicit', evidence: [{ filePath: 'manuscript/第一章.md', quote: '那是母亲生前刻坏的印章：一只少了左眼的渡鸦。' }], updatedAt: now() };
+await project.eventStore.append('fact.upsert', knowledge as never, 'system');
+const task: CreativeTask = { id: uid('task'), title: '完成拆信后的第一次规则验证', description: '让顾临川主动验证来信规则，并付出一个小而具体的代价。', level: 'chapter', status: 'next', kind: 'writing', assignee: 'writer', source: 'navigator', priority: 'high', whyNow: '开篇已经给出异常物和警告，下一步必须兑现规则与行动。', known: ['信来自失踪母亲', '白裙女孩知道十二点禁忌'], missingDecisions: ['顾临川为什么冒险拆信？'], aiPreAnalysis: '可以用现实紧迫目标迫使他行动，避免单纯好奇。', authorDecision: '选择驱动力。', agentWork: '设计三条拆信路线并续写选定路线。', completionCriteria: ['展示可验证规则', '代价落到主角身上', '章末产生更大的具体问题'], links: ['manuscript/第一章.md'], dependencies: [], createdAt: now(), updatedAt: now() };
+await project.eventStore.append('task.upsert', task as never, 'navigator');
+const quote = '“别拆。”女孩说，“至少别在十二点以后拆。”';
+const anchor = makeAnchor('manuscript/第一章.md', chapter, 'demo-snapshot', hashText(chapter), { quote, start: chapter.indexOf(quote), end: chapter.indexOf(quote) + quote.length })!;
+const comment: ObserverComment = { id: 'OBS-demo', issueType: '人物动机', severity: 'warning', summary: '警告很有效，但主角接下来拆信需要比“好奇”更强的现实驱动力。', evidence: '顾临川已经被写成警惕骗子的人，若立即无条件拆信会削弱刚建立的性格。', suggestedAction: '让信件出现只有母亲知道的信息，或让现实危机迫使他在风险中选择。', anchor, status: 'open', reviewCount: 0, messages: [{ id: uid('msg'), source: 'observer', body: '建议补强拆信动机。', createdAt: now() }], createdAt: now(), updatedAt: now() };
+await project.eventStore.append('comment.created', comment as never, 'observer');
+await project.eventStore.append('project.position', { filePath: 'manuscript/第一章.md', stage: '逐章创作、观察和修订', focus: '完成拆信后的第一次规则验证' }, 'system');
+process.stdout.write(`${root}\n`);

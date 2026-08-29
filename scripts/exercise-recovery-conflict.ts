@@ -1,0 +1,24 @@
+import path from 'node:path';
+import os from 'node:os';
+import { mkdtemp } from 'node:fs/promises';
+import { ProjectService } from '../electron/main/project.js';
+import { RecoveryStore } from '../electron/main/recovery.js';
+import { DEFAULT_SETTINGS } from '../src/shared/constants.js';
+
+const root = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(import.meta.dirname, '..', 'workspaces', 'wan-jie-zhu-shen');
+const filePath = 'manuscript/第一卷-灰炉余火/第009章-主席台上的手.md';
+const project = new ProjectService('recovery-conflict-e2e');
+await project.open(root);
+const appData = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-recovery-e2e-'));
+const recovery = new RecoveryStore(appData, async () => DEFAULT_SETTINGS);
+const original = await project.readFile(filePath);
+const unsaved = `${original.content}\n作者尚未保存的测试句。\n`;
+await recovery.create(project.activeManifest.projectId, filePath, unsaved, 'e2e-unsaved-buffer');
+const external = await project.writeFile(filePath, `${original.content}\n外部进程测试句。\n`, original.hash);
+if ('conflict' in external) throw new Error('制造外部变化时不应冲突');
+const conflict = await project.writeFile(filePath, unsaved, original.hash);
+if (!('conflict' in conflict)) throw new Error('旧哈希写入没有触发冲突保护');
+const entry = (await recovery.list(project.activeManifest.projectId, filePath))[0];
+const restored = await recovery.restore(project.activeManifest.projectId, entry.id);
+await project.writeFile(filePath, original.content, external.hash);
+process.stdout.write(`${JSON.stringify({ filePath, conflictProtected: conflict.conflict?.diskContent.includes('外部进程测试句') === true, recoveryMatchesUnsavedBuffer: restored.content === unsaved, recoveryReason: entry.reason, formalFileRestored: (await project.readFile(filePath)).hash === original.hash }, null, 2)}\n`);

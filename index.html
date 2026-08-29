@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#171510" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173" />
+    <title>禁忌观察者</title>
+    <style>
+      html, body, #root { width: 100%; height: 100%; margin: 0; }
+      body { background: #171510; }
+      .boot-screen { box-sizing: border-box; min-height: 100%; display: grid; place-content: center; gap: 12px; padding: 32px; color: #e7dfd0; text-align: center; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+      .boot-screen strong { font-size: 18px; font-weight: 650; }
+      .boot-screen span { color: #a99f8e; }
+    </style>
+  </head>
+  <body>
+    <div id="root"><div class="boot-screen" role="status"><strong>正在打开写作现场…</strong><span>首次启动可能需要几秒钟</span></div></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

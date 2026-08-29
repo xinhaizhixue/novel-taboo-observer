@@ -1,0 +1,26 @@
+import path from 'node:path';
+import { ProjectService } from '../electron/main/project.js';
+
+const root = path.resolve(process.argv[2] || path.join(import.meta.dirname, '..', 'workspaces', 'wan-jie-zhu-shen'));
+const project = new ProjectService('million-word-replan');
+const state = await project.open(root);
+const outline = await project.readFile('planning/百万字总纲.md');
+let content = outline.content;
+const volumeTargets: Array<[string, number]> = [['一', 70], ['二', 81], ['三', 77], ['四', 81], ['五', 77], ['六', 79], ['七', 77], ['八', 79], ['九', 76], ['十', 74], ['十一', 71], ['十二', 90]];
+for (const [volume, chapters] of volumeTargets) content = content.replace(new RegExp(`(\\| ${volume} \\| [^|]+ \\|)\\s*\\d+(\\s*\\|)`), `$1 ${chapters}$2`);
+content = content.replace(/合计约\s*\d+\s*章、110 万字。[^\n]*/, '合计约 932 章、110 万字。第一卷实际70章；后续十一卷按实写均值分配缓冲，并持续由审计器校准；第三卷结案后将2章缓冲预留到终卷。');
+if (content === outline.content) throw new Error('总纲已经调整或目标文本不存在');
+const written = await project.writeFile(outline.path, content, outline.hash);
+if ('conflict' in written) throw new Error('调整总纲时发生并发冲突');
+const decision = await project.readFile('decisions/核心方向.md');
+const decisionContent = decision.content.replace(/目标篇幅：110 万字以上，约\s*\d+\s*章，十二卷完结[^\n]*/, '目标篇幅：110 万字以上，约 932 章，十二卷完结；第一卷实际70章，后续章数依据实写平均有效字数滚动调整；第三卷结案后将2章缓冲预留到终卷。');
+const decisionWritten = await project.writeFile(decision.path, decisionContent, decision.hash);
+if ('conflict' in decisionWritten) throw new Error('调整确认决定时发生并发冲突');
+const averageCharacters = state.manuscriptStats.chapterCount ? state.manuscriptStats.totalCharacters / state.manuscriptStats.chapterCount : 0;
+const recommendedWithBuffer = averageCharacters ? Math.ceil(1_100_000 / averageCharacters * 1.03) : 932;
+await project.eventStore.append('decision.recorded', { title: '第三卷结案后将全书计划微调到932章', before: { chapters: Number(outline.content.match(/合计约\s*(\d+)\s*章/)?.[1] || 0) }, after: { chapters: 932, targetCharacters: 1_100_000, thirdVolumeActualChapters: 77 }, evidence: `当前${state.manuscriptStats.chapterCount}章${state.manuscriptStats.totalCharacters}有效字符，审计含3%缓冲建议至少${recommendedWithBuffer}章；取932章并将新增2章预留到终卷，不改变前十一卷结构。`, files: [outline.path, decision.path] }, 'author');
+await project.eventStore.append('file.changed', { path: outline.path, origin: 'author', reason: 'rolling-plan-revision', hash: written.hash }, 'author');
+await project.eventStore.append('file.changed', { path: decision.path, origin: 'author', reason: 'rolling-plan-revision', hash: decisionWritten.hash }, 'author');
+const activeVolumeGoal = (await project.state()).goals.find((item) => item.status === 'active' && item.title.includes('第二卷《下城武考》'));
+if (activeVolumeGoal && /约\d+章/.test(activeVolumeGoal.description)) await project.eventStore.append('goal.upsert', { ...activeVolumeGoal, description: activeVolumeGoal.description.replace(/约\d+章/, '约81章'), updatedAt: new Date().toISOString() } as never, 'system');
+process.stdout.write(`${JSON.stringify({ plannedChapters: 932, targetCharacters: 1_100_000, averageTarget: Math.ceil(1_100_000 / 932), recommendedWithBuffer, firstVolumeActualChapters: 70, thirdVolumeActualChapters: 77, files: [outline.path, decision.path] }, null, 2)}\n`);

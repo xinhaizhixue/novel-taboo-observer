@@ -1,0 +1,21 @@
+import path from 'node:path';
+import { ProjectService } from '../electron/main/project.js';
+import type { ObserverComment } from '../src/shared/types.js';
+import { now, uid } from '../electron/main/utils.js';
+
+const root = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(import.meta.dirname, '..', 'workspaces', 'wan-jie-zhu-shen');
+const commentId = process.argv[3];
+const action = process.argv[4] || 'accept';
+const reason = process.argv.slice(5).join(' ');
+if (!commentId) throw new Error('用法：accept:comment-feedback <repo> <comment-id> <accept|reject|defer|intentional|review> [reason]');
+const statuses: Record<string, ObserverComment['status']> = { accept: 'accepted', reject: 'rejected', defer: 'deferred', intentional: 'intentional', review: 'review-requested' };
+if (!statuses[action]) throw new Error(`不支持的反馈动作：${action}`);
+const labels: Record<string, string> = { accept: '接受建议', reject: '拒绝建议', defer: '暂缓处理', intentional: '作者有意保留', review: '请求复查' };
+const project = new ProjectService('real-comment-feedback');
+const state = await project.open(root);
+const current = state.comments.find((comment) => comment.id === commentId);
+if (!current) throw new Error('评论不存在');
+const timestamp = now();
+const updated: ObserverComment = { ...current, status: statuses[action], updatedAt: timestamp, messages: [...current.messages, { id: uid('msg'), source: 'author', body: `${labels[action]}${reason ? `：${reason}` : ''}`, createdAt: timestamp }] };
+await project.eventStore.append('comment.updated', updated as never, 'author');
+process.stdout.write(`${JSON.stringify({ id: updated.id, status: updated.status, messages: updated.messages.length, reason }, null, 2)}\n`);

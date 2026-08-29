@@ -1,0 +1,20 @@
+import path from 'node:path';
+import { ProjectService } from '../electron/main/project.js';
+import { ContextAssembler } from '../electron/main/context.js';
+
+const root = path.resolve(process.argv[2] || path.join(import.meta.dirname, '..', 'workspaces', 'wan-jie-zhu-shen'));
+const task = process.argv[3] || '续写第三节点封闸战，保持余烬碑限制、人物知识边界和卷一目标';
+const filePath = process.argv[4] || 'manuscript/第一卷-灰炉余火/第009章-主席台上的手.md';
+const searchQuery = process.argv[5] || '死亡确认书';
+const expectedSource = process.argv[6];
+const project = new ProjectService('context-search-e2e');
+await project.open(root);
+const file = await project.readFile(filePath);
+const search = await project.search(searchQuery);
+const pack = await new ContextAssembler(project).build({ task, filePath: file.path, content: file.content, budget: 28_000 });
+if (!pack.items.some((item) => item.included && item.kind === 'current-buffer')) throw new Error('上下文包遗漏当前正文');
+if (!pack.items.some((item) => item.included && item.kind === 'canon')) throw new Error('上下文包遗漏正典');
+if (!pack.items.some((item) => item.included && item.kind === 'planning')) throw new Error('上下文包遗漏规划');
+if (expectedSource && !pack.items.some((item) => item.included && item.source === expectedSource)) throw new Error(`上下文包遗漏指定资料：${expectedSource}`);
+if (pack.characters > pack.budget && !pack.items.find((item) => item.kind === 'current-buffer')?.content.length) throw new Error('上下文预算异常');
+process.stdout.write(`${JSON.stringify({ searchHits: search.slice(0, 8), pack: { characters: pack.characters, budget: pack.budget, included: pack.items.filter((item) => item.included).map((item) => ({ kind: item.kind, source: item.source, reason: item.reason, characters: item.characters })), excluded: pack.items.filter((item) => !item.included).map((item) => item.source), gaps: pack.gaps } }, null, 2)}\n`);

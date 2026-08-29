@@ -1,0 +1,56 @@
+# MVP 架构
+
+## 1. 边界
+
+禁忌观察者是本地 Electron 工作台，不是模型聚合服务。Renderer 只通过隔离的 preload API 调用主进程；主进程管理小说仓库、Git、恢复点和 Agent 子进程。模型认证、模型选择和工具 Harness 由 Codex CLI、Claude Code 等 Agent 自行负责。
+
+```text
+React + CodeMirror 工作台
+        │ typed IPC
+Electron 主进程
+  ├─ ProjectService：文本、manifest、事件重放
+  ├─ ContextAssembler：按任务选择可解释上下文
+  ├─ AgentHub：统一任务/会话/能力/取消协议
+  │    ├─ CodexAdapter
+  │    └─ ClaudeAdapter
+  ├─ RecoveryStore：仓库外 gzip 去重恢复点
+  └─ GitService：status / diff / 显式 commit
+        │
+小说 Git 仓库（Markdown/TXT + JSON/JSONL）
+```
+
+## 2. 权威数据
+
+- 正文、正典、规划和确认决定是普通 Markdown/TXT。
+- `.novel/manifest.json` 标识数据版本、系列和作品。
+- `.novel/events/YYYY-MM/session-*.jsonl` 是只追加事件源。目标、任务、评论、反馈、Agent 任务与确认结果由事件重放恢复。
+- Agent 完整 stdout/stderr、界面设置、最近项目和恢复点位于 Electron userData；它们不是作品事实源。
+- 作者档案独立保存；规则、证据与 `candidate / confirmed / rejected` 状态一并快照到 manifest，供作品跨电脑继续审查。只有 `confirmed` 规则作为 Agent 的生效约束。
+
+## 3. Agent 协议
+
+适配器统一暴露能力声明、启动、恢复、取消、结构化输出和文件修改能力。工作台不会把缺失能力伪装成可用。
+
+每个任务记录任务 ID、角色、授权范围、开始哈希、会话 ID、结束状态和实际变化文件。Writer 使用 Agent 的 workspace-write 沙箱；其他角色使用只读模式。工作台提示词和新仓库的 `AGENTS.md` 双重禁止 Agent 执行 Git 写操作。
+
+Observer、Navigator 和风格整理使用 JSON Schema 结构化交付：
+
+- Observer 输出逐字 quote 和 UTF-16 范围；工作台重新验证锚点。
+- Navigator 输出 2～4 条路线及效果、因果、代价、风险和后续影响；作者可以选择或明确说明取舍后组合路线，只有确认结果才生成正式目标/任务。
+- 记忆整理员只输出至少两条证据支持的候选规则；候选需作者确认。
+
+Observer 的阻断评论由工作台提供“发回 Writer”语义动作。只有作者点击后，平台才续接覆盖该文件的原 Writer 会话；未保存缓冲区仍会阻止续接。评论、转发反馈和 Writer 任务摘要随仓库事件迁移，运行中 CLI 消息不借仓库文件充当邮箱。
+
+## 4. 并发与版本
+
+编辑器为每个打开文件保存 `savedContent`、磁盘哈希、当前缓冲区、编辑器版本和保存状态。Writer 启动前会检查授权范围内是否有未保存缓冲区；存在时拒绝启动并先写恢复点。
+
+外部变化到达时：干净缓冲区直接重载；脏缓冲区进入三方比较（编辑起点、作者缓冲区、磁盘最新版）。任何一方都不会被静默覆盖。
+
+Observer 始终分析不可变快照。评论保存原快照哈希、原文、前后文和位置；原文仍逐字存在时才允许重定位，否则标记 stale。
+
+## 5. 恢复与限制
+
+恢复点使用内容哈希去重和 gzip blob，索引位于仓库外。默认 30 秒、30 天、单项目 500 MB、全局 2 GB，并保护每个文件最新恢复点和最近会话结束点。
+
+当前数据版本为 1。高于工作台支持版本的项目会拒绝打开并提示升级，低版本也不会被静默改写；未来升级必须先备份再显式迁移。单条事件损坏时保留原文件、继续重放有效历史，并在继续创作页显示精确诊断。MVP 首发 macOS，领域模型与仓库格式不依赖 macOS。
