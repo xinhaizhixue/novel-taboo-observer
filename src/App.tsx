@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { Editor, MarkdownPreview } from '@/components/Editor';
 import { HelpPanel } from '@/components/HelpPanel';
-import { currentTaskForAgent } from '@/lib/agent-task';
+import { currentTaskForAgent, suggestedObjectiveForAgent } from '@/lib/agent-task';
 import { addAuthorContextNote, setContextItemIncluded } from '@/lib/context-pack';
 import { mergeThreeWay, renderThreeWayMerge, type MergeChoice } from '@/lib/three-way-merge';
 import { characters, errorMessage, fileTitle, relativeTime, sha256 } from '@/lib/format';
@@ -1036,9 +1036,25 @@ function suggestedAgentRole(filePath?: string): AgentRole {
 }
 
 function AgentsPanel({ project, agents, events, buffer, contextPack, preset, onContext, onShowContext, onRefresh, onReloadAgents }: { project: ProjectState; agents: AgentAdapterInfo[]; events: AgentEvent[]; buffer: BufferState | null; contextPack: ContextPack | null; preset: { role: AgentRole; objective: string; nonce: number } | null; onContext(pack: ContextPack): void; onShowContext(): void; onRefresh(): Promise<void>; onReloadAgents(): Promise<AgentAdapterInfo[]> }) {
-  const [objective, setObjective] = useState(project.continueCard.focus); const [role, setRole] = useState<AgentRole>(() => suggestedAgentRole(buffer?.path)); const [adapter, setAdapter] = useState<AgentAdapterInfo['id']>(agents.find((item) => item.available)?.id ?? 'codex'); const [allowNetwork, setAllowNetwork] = useState(false); const [running, setRunning] = useState(false); const [preparing, setPreparing] = useState(false); const [checking, setChecking] = useState(false); const [error, setError] = useState('');
+  const initialRole = suggestedAgentRole(buffer?.path);
+  const initialObjective = suggestedObjectiveForAgent(project.tasks, project.continueCard.focus, initialRole, buffer?.path);
+  const [objective, setObjective] = useState(initialObjective); const [role, setRole] = useState<AgentRole>(initialRole); const [adapter, setAdapter] = useState<AgentAdapterInfo['id']>(agents.find((item) => item.available)?.id ?? 'codex'); const [allowNetwork, setAllowNetwork] = useState(false); const [running, setRunning] = useState(false); const [preparing, setPreparing] = useState(false); const [checking, setChecking] = useState(false); const [error, setError] = useState('');
+  const lastAutomaticObjective = useRef(initialObjective);
+  const lastBufferPath = useRef(buffer?.path);
   useEffect(() => { if (preset) { setRole(preset.role); setObjective(preset.objective); } }, [preset?.nonce]);
-  useEffect(() => { if (!preset) setRole(suggestedAgentRole(buffer?.path)); }, [buffer?.path, preset]);
+  useEffect(() => {
+    if (preset) return;
+    const nextRole = suggestedAgentRole(buffer?.path);
+    const nextObjective = suggestedObjectiveForAgent(project.tasks, project.continueCard.focus, nextRole, buffer?.path);
+    const pathChanged = lastBufferPath.current !== buffer?.path;
+    lastBufferPath.current = buffer?.path;
+    setRole(nextRole);
+    setObjective((current) => {
+      const shouldRefresh = pathChanged || !current.trim() || current === lastAutomaticObjective.current;
+      lastAutomaticObjective.current = nextObjective;
+      return shouldRefresh ? nextObjective : current;
+    });
+  }, [buffer?.path, preset, project.continueCard.focus, project.tasks]);
   const records = [...project.agentTasks].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const selectedAgent = agents.find((item) => item.id === adapter);
   const writerBusy = role === 'writer' && records.some((item) => item.role === 'writer' && item.state === 'running');
