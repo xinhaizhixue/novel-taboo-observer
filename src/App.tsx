@@ -104,8 +104,13 @@ export default function App() {
     do {
       refreshQueued.current = false;
       const run = api.refreshProject()
-        .then((next) => { setProject(next); })
-        .catch((error) => { setNotice({ kind: 'error', text: errorMessage(error) }); });
+        .then((next) => {
+          setProject(next);
+          // A later successful watcher refresh supersedes only an earlier
+          // refresh failure. Keep save/conflict/Agent errors visible.
+          setNotice((current) => current?.kind === 'error' && (current.text.startsWith('项目刷新失败：') || current.text.includes("workbench:refreshProject")) ? null : current);
+        })
+        .catch((error) => { setNotice({ kind: 'error', text: `项目刷新失败：${errorMessage(error)}` }); });
       refreshInFlight.current = run;
       await run;
       refreshInFlight.current = null;

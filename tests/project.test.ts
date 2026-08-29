@@ -1,7 +1,7 @@
 import { appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProjectService } from '../electron/main/project.js';
 import { exec } from '../electron/main/utils.js';
 import type { AuthorProfile } from '../src/shared/types.js';
@@ -41,6 +41,24 @@ describe('可迁移作品仓库', () => {
     expect(state.manifest.targetCharacters).toBe(1_100_000);
     expect(state.manuscriptStats.chapterCount).toBe(2);
     expect(state.manuscriptStats.totalCharacters).toBeGreaterThanOrEqual(10);
+  });
+
+  it('刷新期间正文被移走时用同一份新快照重建目录和字数', async () => {
+    const { root, project } = await fixture();
+    await project.writeFile('manuscript/第二章.md', '# 第二章\n\n即将被外部移走的正文。', undefined, true);
+    const actualFiles = project.files.bind(project);
+    vi.spyOn(project, 'files')
+      .mockImplementationOnce(async () => {
+        const stale = await actualFiles();
+        await rm(path.join(root, 'manuscript', '第二章.md'));
+        return stale;
+      })
+      .mockImplementation(actualFiles);
+
+    const state = await project.state();
+    expect(state.files.some((file) => file.path === 'manuscript/第二章.md')).toBe(false);
+    expect(state.manuscriptStats.chapterCount).toBe(1);
+    expect(state.manuscriptStats.totalCharacters).toBeGreaterThan(0);
   });
 
   it('换一个本机实例后可从 manifest 与事件重建关键状态', async () => {

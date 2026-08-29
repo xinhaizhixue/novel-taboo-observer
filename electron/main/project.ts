@@ -236,7 +236,7 @@ export class ProjectService {
   }
 
   async state(): Promise<ProjectState> {
-    const [files, events, git] = await Promise.all([this.files(), this.eventStore.all(), this.gitService.status()]);
+    const [{ files, manuscriptContents }, events, git] = await Promise.all([this.textSnapshot(), this.eventStore.all(), this.gitService.status()]);
     const reduced = reduceEvents(events);
     const goal = [...reduced.goals].filter((item) => item.status === 'active').sort((a, b) => ['author-pinned', 'active-task', 'confirmed-plan', 'agent-suggestion'].indexOf(a.authority) - ['author-pinned', 'active-task', 'confirmed-plan', 'agent-suggestion'].indexOf(b.authority))[0];
     const current = reduced.tasks.filter((item) => item.status === 'now');
@@ -254,7 +254,6 @@ export class ProjectService {
     };
     const agentFiles = new Set(reduced.agentTasks.flatMap((task) => task.changedFiles));
     const attributedGit = { ...git, files: git.files.map((file) => ({ ...file, origin: this.openedDirty.has(file.path) ? 'pre-existing' as const : agentFiles.has(file.path) ? 'agent' as const : reduced.fileOrigins[file.path] ?? file.origin })) };
-    const manuscriptContents = await Promise.all(files.filter((item) => item.category === 'manuscript').map((item) => readFile(path.join(this.activeRoot, item.path), 'utf8')));
     const totalCharacters = manuscriptContents.reduce((sum, content) => sum + content.replace(/\s/g, '').length, 0);
     const targetCharacters = this.activeManifest.targetCharacters || 1_000_000;
     const manuscriptStats = { totalCharacters, targetCharacters, chapterCount: manuscriptContents.length, progress: Math.min(1, totalCharacters / targetCharacters) };
@@ -267,10 +266,39 @@ export class ProjectService {
     for (const relative of entries) {
       const extension = path.extname(relative).toLowerCase();
       if (!SUPPORTED_TEXT_EXTENSIONS.has(extension)) continue;
-      const info = await stat(path.join(this.activeRoot, relative));
+      let info;
+      try { info = await stat(path.join(this.activeRoot, relative)); }
+      catch (error) {
+        // Chokidar can request a refresh between an Agent's atomic rename,
+        // move or trash operation and the next directory scan. A path that
+        // disappeared after fast-glob listed it belongs to the next snapshot,
+        // not to a fatal project error.
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
       files.push({ path: relative, name: path.basename(relative), extension, category: category(relative), size: info.size, modifiedAt: info.mtime.toISOString() });
     }
     return files.sort((a, b) => compareNaturalPath(a.path, b.path));
+  }
+
+  private async textSnapshot() {
+    let lastMissing: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const files = await this.files();
+      try {
+        const manuscriptContents = await Promise.all(files
+          .filter((item) => item.category === 'manuscript')
+          .map((item) => readFile(path.join(this.activeRoot, item.path), 'utf8')));
+        return { files, manuscriptContents };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        lastMissing = error;
+        // Yield once so the atomic rename/move can settle, then rebuild both
+        // the file tree and character totals from the same fresh snapshot.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    throw lastMissing;
   }
 
   async readFile(requested: string) {
