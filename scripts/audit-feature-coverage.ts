@@ -20,7 +20,7 @@ const state = await project.open(root);
 const events = await project.eventStore.all();
 const eventCounts = Object.fromEntries(Object.entries(Object.groupBy(events, (event) => event.type)).map(([type, items]) => [type, items?.length || 0]));
 const acceptanceReceipts = new Map<string, Record<string, unknown>>();
-const uiReceiptIds = new Set(['dev-web-interaction', 'desktop-macos-ui', 'author-ui-writing-flow', 'platform-deep-ui', 'usability-lifecycle-v2', 'content-lifecycle-v3']);
+const uiReceiptIds = new Set(['dev-web-interaction', 'desktop-macos-ui', 'author-ui-writing-flow', 'platform-deep-ui', 'author-style-ui', 'usability-lifecycle-v2', 'content-lifecycle-v3']);
 for (const event of events.filter((item) => item.type === 'acceptance.recorded')) {
   const payload = event.payload as unknown as Record<string, unknown>;
   if (typeof payload.id !== 'string' || payload.status !== 'passed') continue;
@@ -45,6 +45,7 @@ const completedResearch = state.tasks.filter((task) => task.assignee === 'resear
 const linkedStyleRules = (() => { try { return (JSON.parse(state.manifest.authorProfile?.snapshot || '{}') as { rules?: unknown[] }).rules || []; } catch { return []; } })();
 const usabilityReceipt = acceptanceReceipts.get('usability-lifecycle-v2');
 const contentLifecycleReceipt = acceptanceReceipts.get('content-lifecycle-v3');
+const authorStyleReceipt = acceptanceReceipts.get('author-style-ui');
 const crossGenreReceipt = acceptanceReceipts.get('cross-genre-real-agent');
 const gitCoverage = policyAwareGitCoverage({
   currentProjectLocalOnly,
@@ -70,7 +71,7 @@ const checks: Check[] = [
   check('story-memory', '人物/关系/时间线/知识/伏笔/规则等故事事实有来源地维护', state.facts.length > 0 ? 'verified-real' : 'pending', [`facts=${state.facts.length}`, `categories=${[...new Set(state.facts.map((fact) => fact.category))].sort().join(',')}`]),
   check('researcher', 'Researcher资产独立且不自动升级正典', completedResearch.length > 0 && state.files.some((file) => file.category === 'research') ? 'verified-real' : 'pending', [`completedResearchTasks=${completedResearch.length}`, `researchFiles=${state.files.filter((file) => file.category === 'research').length}`]),
   check('observer-loop', 'Observer锚定评论、作者反馈和修改后复查形成闭环', reviewedComments.length > 0 && authorFeedbackComments.length > 0 ? 'verified-real' : 'pending', [`comments=${state.comments.length}`, `reviewed=${reviewedComments.length}`, `withAuthorFeedback=${authorFeedbackComments.length}`]),
-  check('author-style', '真实正文与反馈可提炼为有证据的风格候选，规则可确认、编辑、删除并迁移', usabilityReceipt ? 'verified-real' : linkedStyleRules.length ? 'partial' : 'pending', [`profileLinked=${Boolean(state.manifest.authorProfile)}`, `linkedRules=${linkedStyleRules.length}`, `memoryCuratorCompleted=${state.agentTasks.filter((task) => task.role === 'memory-curator' && task.state === 'completed').length}`, `author-profile.linked=${eventCounts['author-profile.linked'] || 0}`], '完成真实记忆整理员任务并在UI验证候选、编辑和删除'),
+  check('author-style', '真实正文与反馈可提炼为有证据的风格候选，规则可确认、编辑、删除并迁移', authorStyleReceipt || usabilityReceipt ? 'verified-real' : linkedStyleRules.length ? 'partial' : 'pending', [`profileLinked=${Boolean(state.manifest.authorProfile)}`, `linkedRules=${linkedStyleRules.length}`, `memoryCuratorCompleted=${state.agentTasks.filter((task) => task.role === 'memory-curator' && task.state === 'completed').length}`, `author-profile.linked=${eventCounts['author-profile.linked'] || 0}`, `authorStyleUiReceipt=${Boolean(authorStyleReceipt)}`], '完成真实记忆整理员任务并在UI验证候选、编辑和删除'),
   check('context-pack', '真实长篇任务上下文包含当前正文、正典、计划和结构化状态且不超预算', contextPack && ['current-buffer', 'canon', 'planning', 'workbench-state'].every((kind) => includedKinds.has(kind)) && contextPack.characters <= contextPack.budget ? 'verified-real' : 'pending', [`characters=${contextPack?.characters || 0}/${contextPack?.budget || 0}`, `kinds=${[...includedKinds].sort().join(',')}`]),
   acceptanceReceipts.has('platform-deep-ui') ? check('deep-author-controls', '作者可调整真实Agent上下文、查看正典影响、逐段解决三方冲突并顺畅操作长篇导航/设置/任务', 'verified-real', [JSON.stringify(acceptanceReceipts.get('platform-deep-ui'))]) : automated('deep-author-controls', '作者可调整真实Agent上下文、查看正典影响、逐段解决三方冲突并顺畅操作长篇导航/设置/任务', ['tests/context-customization.test.ts', 'tests/canon-impact.test.ts', 'tests/three-way-merge.test.ts', 'tests/project.test.ts: 搜索文件名优先'], '在真实Electron界面完成深度作者控制闭环并保存platform-deep-ui回执'),
   check('git-review', '正文改动可经Git diff审查且只在明确命令下提交', gitCoverage.gitReview ? 'verified-real' : 'partial', [`commits=${commitCount}`, `file.changed=${eventCounts['file.changed'] || 0}`, `workingTreeClean=${state.git.clean}`, `currentProjectPolicy=${currentProjectLocalOnly ? 'local-only' : 'author-checkpoints'}`, `visibleDiffReceipt=${acceptanceReceipts.has('author-ui-writing-flow')}`], currentProjectLocalOnly ? '当前项目明确保持本地；如策略变化，再由作者显式建立检查点' : state.git.clean ? undefined : '完成当前写作批次后建立小说检查点，再重跑矩阵'),

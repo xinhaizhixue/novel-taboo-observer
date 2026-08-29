@@ -35,4 +35,14 @@ describe('UI验收证据门禁', () => {
     expect(() => validateUiAcceptanceEvidence({ ...evidence(), observedAt: '2026-08-27T09:50:00.000Z' }, { mode: 'author-ui-writing-flow', repositoryRoot: root, now })).toThrow('超过24小时');
     expect(() => validateUiAcceptanceEvidence({ ...evidence(), screenshots: [] }, { mode: 'author-ui-writing-flow', repositoryRoot: root, now })).toThrow('至少需要一张');
   });
+
+  it('作者风格V2回执必须覆盖确认、创建、编辑、删除和重载', () => {
+    const styleEvidence = {
+      ...evidence(),
+      mode: 'author-style-ui' as const,
+      steps: REQUIRED_UI_STEPS['author-style-ui'].map((id) => ({ id, status: 'passed' as const, evidence: `${id} 已完成` }))
+    };
+    expect(validateUiAcceptanceEvidence(styleEvidence, { mode: 'author-style-ui', repositoryRoot: root, now }).steps).toHaveLength(6);
+    expect(() => validateUiAcceptanceEvidence({ ...styleEvidence, steps: styleEvidence.steps.filter((step) => step.id !== 'rule-delete') }, { mode: 'author-style-ui', repositoryRoot: root, now })).toThrow('UI验收缺少步骤：rule-delete');
+  });
 });

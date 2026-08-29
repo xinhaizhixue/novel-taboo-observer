@@ -5,6 +5,7 @@ export const UI_ACCEPTANCE_MODES = [
   'desktop-macos-ui',
   'author-ui-writing-flow',
   'platform-deep-ui',
+  'author-style-ui',
   'usability-lifecycle-v2',
   'content-lifecycle-v3'
 ] as const;
@@ -16,6 +17,7 @@ export const REQUIRED_UI_STEPS: Record<UiAcceptanceMode, string[]> = {
   'desktop-macos-ui': ['start-window', 'traffic-lights', 'page-navigation', 'no-black-screen', 'adapter-status'],
   'author-ui-writing-flow': ['open-project', 'natural-sort-navigation', 'chinese-edit', 'scroll-round-trip', 'save', 'observer-run-cancel', 'comment-feedback-review', 'git-diff'],
   'platform-deep-ui': ['cold-start', 'context-customization', 'canon-impact', 'three-way-conflict', 'chapter-search', 'numeric-settings', 'task-editor'],
+  'author-style-ui': ['style-page', 'candidate-confirm', 'rule-create', 'rule-edit', 'rule-delete', 'profile-reload'],
   'usability-lifecycle-v2': ['project-hub', 'new-project', 'repository-info', 'chapter-delete-restore', 'volume-delete-restore', 'repository-trash', 'git-diff', 'style-crud', 'information-architecture', 'help-onboarding', 'contrast'],
   'content-lifecycle-v3': ['manuscript-delete-restore', 'planning-delete-restore', 'research-delete-restore', 'canon-delete-restore', 'decision-delete-restore', 'nested-directory-delete-restore', 'series-work-delete-restore', 'protected-roots', 'structured-state-semantics']
 };
