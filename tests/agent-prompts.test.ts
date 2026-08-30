@@ -40,4 +40,18 @@ describe('Observer 通用审查边界', () => {
     expect(prompt).toContain('正文、正典、规划和结构化事实');
     expect(prompt).toContain('不得自行发明新口径补洞');
   });
+
+  it('允许当前正文通过可验证行动首次建立新事实', () => {
+    const content = '角色打开城市登记簿，核对发布主体、版本时间、源文哈希与签名链，并逐段对照页面摘要。';
+    const prompt = observerPrompt({
+      adapterId: 'codex',
+      mode: 'manual',
+      snapshot: { id: 'snapshot-new-fact', filePath: 'manuscript/第十一章.md', content, hash: hashText(content), editorVersion: 1, createdAt: '2026-08-30T00:00:00.000Z' }
+    });
+
+    expect(prompt).toContain('当前快照不能首次建立新事实');
+    expect(prompt).toContain('本章新生成的正文证据');
+    expect(prompt).toContain('不要仅因前文/正典/事件流中尚无');
+    expect(prompt).toContain('无可见核验动作时，仍要标为未核实');
+  });
 });
