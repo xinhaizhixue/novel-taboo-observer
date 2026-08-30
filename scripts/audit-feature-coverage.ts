@@ -14,9 +14,9 @@ const directRoot = projectArgument ? path.resolve(projectArgument) : path.resolv
 const workspaceRoot = projectArgument ? path.resolve(import.meta.dirname, '..', 'workspaces', projectArgument) : directRoot;
 const root = projectArgument && !(await exists(directRoot)) && await exists(workspaceRoot) ? workspaceRoot : directRoot;
 const allowIncomplete = process.env.FEATURE_ALLOW_INCOMPLETE === '1';
-const currentProjectLocalOnly = process.env.FEATURE_CURRENT_PROJECT_LOCAL_ONLY === '1';
 const project = new ProjectService('feature-coverage-audit');
 const state = await project.open(root);
+const currentProjectLocalOnly = process.env.FEATURE_CURRENT_PROJECT_LOCAL_ONLY === '1' || state.manifest.gitPolicy === 'local-only';
 const events = await project.eventStore.all();
 const eventCounts = Object.fromEntries(Object.entries(Object.groupBy(events, (event) => event.type)).map(([type, items]) => [type, items?.length || 0]));
 const acceptanceReceipts = new Map<string, Record<string, unknown>>();

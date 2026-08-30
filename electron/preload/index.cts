@@ -15,6 +15,7 @@ const api: WorkbenchApi = {
   writeFile: (input) => invoke('writeFile', input),
   moveFile: (input) => invoke('moveFile', input),
   repositoryInfo: () => invoke('repositoryInfo'),
+  updateGitPolicy: (policy) => invoke('updateGitPolicy', policy),
   revealProjectFolder: () => invoke('revealProjectFolder'),
   copyText: (text) => invoke('copyText', text),
   analyzeTrash: (input) => invoke('analyzeTrash', input),

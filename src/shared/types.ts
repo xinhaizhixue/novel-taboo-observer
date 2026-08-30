@@ -9,6 +9,7 @@ export type TaskKind = 'writing' | 'canon' | 'research' | 'revision' | 'review' 
 export type ScopeLevel = 'series' | 'work' | 'volume' | 'chapter' | 'scene' | 'session';
 export type FactStatus = 'author-confirmed' | 'text-explicit' | 'agent-inferred' | 'ai-suggested' | 'conflict' | 'deprecated';
 export type AgentRole = 'writer' | 'observer' | 'navigator' | 'architect' | 'canon-keeper' | 'style-coach' | 'researcher' | 'editor' | 'release-assistant' | 'memory-curator';
+export type GitPolicy = 'author-checkpoints' | 'local-only';
 
 export interface ProjectManifest {
   schemaVersion: number;
@@ -19,6 +20,7 @@ export interface ProjectManifest {
   createdAt: string;
   updatedAt: string;
   targetCharacters?: number;
+  gitPolicy?: GitPolicy;
   activeWorkId?: string;
   works: Array<{ id: string; title: string; manuscriptRoot: string; status: 'planning' | 'serializing' | 'revision' | 'completed' }>;
   authorProfile?: { id: string; snapshot?: string };
@@ -362,6 +364,7 @@ export interface WorkbenchApi {
   writeFile(input: FileWriteRequest): Promise<FileWriteResult>;
   moveFile(input: { from: string; to: string }): Promise<ProjectState>;
   repositoryInfo(): Promise<RepositoryInfo>;
+  updateGitPolicy(policy: GitPolicy): Promise<ProjectState>;
   revealProjectFolder(): Promise<void>;
   copyText(text: string): Promise<void>;
   analyzeTrash(input: { kind: TrashKind; path: string }): Promise<TrashImpact>;

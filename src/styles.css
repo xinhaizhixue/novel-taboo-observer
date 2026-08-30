@@ -297,6 +297,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .git-page > aside > header b, .git-page > aside > header span { display: block; }
 .git-page > aside > header b { font-size: 13px; }
 .git-page > aside > header span { color: var(--muted); font-size: 10px; }
+.git-policy-note { margin: 0 8px 14px; padding: 9px 10px; border: 1px solid #d7c7ac; border-radius: 6px; background: #f8f2e7; color: #665b49; font-size: 10px; line-height: 1.55; }
 .git-group { margin: 7px 0; }
 .git-group > button { width: 100%; min-height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; text-align: left; font-size: 10px; cursor: pointer; }
 .git-group > button:hover, .git-group > button.active { background: rgba(255,255,255,.55); }

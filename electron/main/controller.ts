@@ -112,6 +112,7 @@ export class WorkbenchController {
         return this.project.state();
       },
       repositoryInfo: () => this.project.gitService.info(),
+      updateGitPolicy: async (policy) => { const state = await this.project.updateGitPolicy(policy); this.send('workbench:project-change'); return state; },
       revealProjectFolder: async () => { const error = await shell.openPath(this.project.activeRoot); if (error) throw new Error(error); },
       copyText: async (text) => { clipboard.writeText(text); },
       analyzeTrash: (input) => this.trash.analyze(input.kind, input.path),
@@ -150,7 +151,10 @@ export class WorkbenchController {
       gitStatus: () => this.project.gitService.status(),
       gitDiff: (filePath, staged) => this.project.gitService.diff(filePath, staged),
       gitFileVersions: (filePath) => this.project.gitService.versions(filePath),
-      gitCommit: (input) => this.project.gitService.commit(input.message, input.paths, input.explicitAuthorization),
+      gitCommit: (input) => {
+        if ((this.project.activeManifest.gitPolicy ?? 'author-checkpoints') === 'local-only') throw new Error('当前作品设置为“仅本地、不提交”。如需建立检查点，请先在项目设置中修改 Git 提交策略。');
+        return this.project.gitService.commit(input.message, input.paths, input.explicitAuthorization);
+      },
       listAgents: () => this.hub.list(),
       runAgent: async (input) => {
         if (input.role === 'writer' && !input.scope.length) throw new Error('Writer 任务必须明确文件或目录范围');

@@ -21,6 +21,7 @@ describe('可迁移作品仓库', () => {
   it('把正文、正典、规划、目标和任务写入 Git 仓库', async () => {
     const { root, state } = await fixture();
     expect(state.manifest.title).toBe('雾城来信');
+    expect(state.manifest.gitPolicy).toBe('author-checkpoints');
     expect(state.continueCard.next.length).toBeGreaterThan(0);
     expect(state.manuscriptStats).toMatchObject({ targetCharacters: 1_000_000, chapterCount: 1 });
     expect(state.manuscriptStats.totalCharacters).toBeGreaterThan(0);
@@ -29,6 +30,18 @@ describe('可迁移作品仓库', () => {
     const events = await readFile(path.join(root, '.novel', 'events', new Date().toISOString().slice(0, 7), 'session-test-session.jsonl'), 'utf8');
     expect(events).toContain('goal.upsert');
     expect(events).toContain('task.upsert');
+  });
+
+  it('把仅本地提交策略写进作品清单并在重新打开后恢复', async () => {
+    const { root, project } = await fixture();
+    const updated = await project.updateGitPolicy('local-only');
+    expect(updated.manifest.gitPolicy).toBe('local-only');
+    const manifest = JSON.parse(await readFile(path.join(root, '.novel', 'manifest.json'), 'utf8')) as { gitPolicy?: string };
+    expect(manifest.gitPolicy).toBe('local-only');
+    const restored = await new ProjectService('local-only-restore').open(root);
+    expect(restored.manifest.gitPolicy).toBe('local-only');
+    const events = await project.eventStore.all();
+    expect(events.some((event) => event.type === 'project.policy.updated' && (event.payload as { git?: string }).git === 'local-only')).toBe(true);
   });
 
   it('保存计划篇幅并汇总跨章节正文进度', async () => {

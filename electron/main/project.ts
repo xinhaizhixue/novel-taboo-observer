@@ -3,7 +3,7 @@ import path from 'node:path';
 import fg from 'fast-glob';
 import { DATA_VERSION, MANIFEST_PATH, PROJECT_FOLDERS, SUPPORTED_TEXT_EXTENSIONS } from '../../src/shared/constants.js';
 import { compareNaturalPath } from '../../src/shared/natural-sort.js';
-import type { AgentTaskRecord, AuthorProfile, ContinueCard, CreativeTask, Goal, NavigationProposal, NovelEvent, ObserverComment, ProjectFile, ProjectManifest, ProjectState, StoryFact } from '../../src/shared/types.js';
+import type { AgentTaskRecord, AuthorProfile, ContinueCard, CreativeTask, GitPolicy, Goal, NavigationProposal, NovelEvent, ObserverComment, ProjectFile, ProjectManifest, ProjectState, StoryFact } from '../../src/shared/types.js';
 import { EventStore } from './events.js';
 import { GitService } from './git.js';
 import { atomicWrite, exists, fileInfo, hashText, now, readJson, safeRelative, uid, writeJson } from './utils.js';
@@ -91,6 +91,7 @@ export class ProjectService {
       createdAt: timestamp,
       updatedAt: timestamp,
       targetCharacters: Math.max(50_000, input.targetCharacters || 1_000_000),
+      gitPolicy: 'author-checkpoints',
       activeWorkId: workId,
       works: [{ id: workId, title: input.title.trim() || '未命名作品', manuscriptRoot, status: 'planning' }]
     };
@@ -172,6 +173,16 @@ export class ProjectService {
     await writeJson(path.join(this.activeRoot, MANIFEST_PATH), this.manifest);
     const firstFile = (await this.files()).find((file) => file.path.startsWith(`${work.manuscriptRoot}/`));
     await this.eventStore.append('project.position', { filePath: firstFile?.path || '', stage: work.status === 'planning' ? '灵感与创作意图' : '逐章创作与修订', focus: `继续《${work.title}》` }, 'system');
+    return this.state();
+  }
+
+  async updateGitPolicy(policy: GitPolicy) {
+    if (policy !== 'author-checkpoints' && policy !== 'local-only') throw new Error('不支持的 Git 提交策略');
+    const previous = this.activeManifest.gitPolicy ?? 'author-checkpoints';
+    if (previous === policy) return this.state();
+    this.manifest = { ...this.activeManifest, gitPolicy: policy, updatedAt: now() };
+    await writeJson(path.join(this.activeRoot, MANIFEST_PATH), this.manifest);
+    await this.eventStore.append('project.policy.updated', { git: policy, previousGit: previous, updatedAt: this.manifest.updatedAt }, 'author');
     return this.state();
   }
 
