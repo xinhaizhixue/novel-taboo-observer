@@ -47,6 +47,7 @@ function strings(value: unknown) {
 
 function adapterFailure(exitCode: number, raw: string[]) {
   const output = raw.join('\n');
+  if (/model requires a newer version of Codex/i.test(output)) return '当前 Codex CLI 版本过旧，无法运行已配置的模型。请升级 CLI，或通过 NOVEL_OBSERVER_CODEX_PATH 指定已安装的新版 Codex；工作台未自动切换模型。';
   if (/failed to refresh available models:\s*timeout waiting for child process to exit|Codex 启动时刷新可用模型失败/i.test(output)) return 'Codex 启动时刷新可用模型失败；本次任务尚未执行。请确认 Codex 客户端的网络和模型可用后重试。';
   if (/Agent 启动超过 \d+ 秒仍没有模型输出/i.test(output) || exitCode === 124) return 'Agent 启动后长时间没有模型输出，工作台已停止本次任务；正文没有被自动重跑，请检查 Agent 状态后重试。';
   if (/readonly database|attempt to write a readonly database/i.test(output)) return 'Codex 的运行状态目录不可写；请检查 Agent 自己的安装目录权限。';

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { observerPrompt } from '../electron/main/agents/prompts.js';
+import { observerPrompt, taskPrompt } from '../electron/main/agents/prompts.js';
 import { hashText } from '../electron/main/utils.js';
 import type { ContextPack } from '../src/shared/types.js';
 
 describe('Observer 通用审查边界', () => {
-  it('要求逐项核对能力触发、距离、代价、阶段与可接触信息', () => {
+  it('保留作品连续性要求，但不把工具权限当成小说叙事要求', () => {
     const content = '主角隔着匿名远程页面看见了陌生人身上的印记。';
     const contextPack: ContextPack = {
       id: 'context-ability',
@@ -22,9 +22,9 @@ describe('Observer 通用审查边界', () => {
       snapshot: { id: 'snapshot-ability', filePath: 'manuscript/第十章.md', content, hash: hashText(content), editorVersion: 1, createdAt: '2026-08-30T00:00:00.000Z' }
     });
 
-    expect(prompt).toContain('触发条件、作用距离、代价、已解锁阶段');
-    expect(prompt).toContain('匿名界面、远程文件或他人口述不会自动成为');
-    expect(prompt).toContain('能力边界或知识边界');
+    expect(prompt).toContain('本作品已确立的人物知识、能力条件与事件因果');
+    expect(prompt).toContain('不要求故事人物为每件事办理授权');
+    expect(prompt).toContain('创作与工作台记录分开');
   });
 
   it('遇到跨章汇总数据时要求只读溯源而不自造统计口径', () => {
@@ -52,6 +52,17 @@ describe('Observer 通用审查边界', () => {
     expect(prompt).toContain('当前快照不能首次建立新事实');
     expect(prompt).toContain('本章新生成的正文证据');
     expect(prompt).toContain('不要仅因前文/正典/事件流中尚无');
-    expect(prompt).toContain('无可见核验动作时，仍要标为未核实');
+    expect(prompt).toContain('正常的叙述、行动、感官描写与符合视角的对话');
+    expect(prompt).toContain('不要求额外的权威文书、签名、哈希或核验场景');
+    expect(prompt).not.toContain('无可见核验动作时，仍要标为未核实');
+  });
+
+  it('正文创作与审校都覆盖人物、情节和读者体验', () => {
+    const writer = taskPrompt({ adapterId: 'codex', role: 'writer', objective: '完成首章', scope: ['manuscript/第一章.md'], completionCriteria: ['人物困境明确'] });
+    const observer = observerPrompt({ adapterId: 'codex', mode: 'manual', snapshot: { id: 'reading', filePath: 'manuscript/第一章.md', content: '雨淹进船舱。', hash: 'test', editorVersion: 1, createdAt: '2026-09-06T00:00:00Z' } });
+    expect(writer).toContain('人物当下想要什么');
+    expect(writer).toContain('章末推进故事');
+    expect(observer).toContain('迟迟没有情节进展');
+    expect(observer).toContain('不能以“数字都对”代替文学判断');
   });
 });

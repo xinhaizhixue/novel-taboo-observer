@@ -33,6 +33,7 @@ ${kind === 'codex' ? `if (args[0] === 'login' && args[1] === 'status') { log(); 
 ${kind === 'codex' ? `if (args[0] === 'debug' && args[1] === 'models' && args[2] === '--bundled') { log(); process.stdout.write(JSON.stringify({ models: [{ slug: 'gpt-5.6-luna' }, { slug: 'gpt-5.5' }] })); process.exit(0); }` : ''}
 function finish(prompt) {
   log(prompt);
+  if (prompt.includes('FAKE_NEWER_CLI_REQUIRED')) { process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'The configured model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.' } }) + '\\n'); process.exit(1); }
   if (prompt.includes('FAKE_FAIL')) { process.stderr.write('authentication expired\\n'); process.exit(5); }
   if (prompt.includes('FAKE_MODEL_REFRESH_STALL')) { process.stderr.write('ERROR failed to refresh available models: timeout waiting for child process to exit\\n'); setInterval(() => {}, 1000); return; }
   if (prompt.includes('FAKE_MODEL_REFRESH_RECOVERS')) {
@@ -252,6 +253,12 @@ describe('真实 CLI 子进程适配器', () => {
     expect(observerCall?.args).toContain('--ignore-user-config');
     expect(observerCall?.args.join(' ')).toContain('--model gpt-5.6-luna');
     expect(observerCall?.args.join(' ')).toContain('model_reasoning_effort="low"');
+
+    const incompatible = await hub.runTask({ adapterId: 'codex', role: 'writer', objective: 'FAKE_NEWER_CLI_REQUIRED', scope: ['manuscript/第一章.md'], completionCriteria: [] });
+    const incompatibleRecord = await waitForRecord(project, incompatible.id, ['failed']);
+    expect(incompatibleRecord.error).toContain('Codex CLI 版本过旧');
+    expect(incompatibleRecord.changedFiles).toEqual([]);
+    expect((await calls(logPath)).filter((call) => call.prompt.includes('FAKE_NEWER_CLI_REQUIRED'))).toHaveLength(1);
 
     const style = await hub.runTask({ adapterId: 'codex', role: 'memory-curator', objective: 'FAKE_FAIL_STYLE', scope: ['planning', 'canon'], completionCriteria: [] });
     await waitForRecord(project, style.id, ['failed']);

@@ -12,6 +12,14 @@ npm run dev
 
 真实写作使用自动打开的 Electron 窗口。`npm run dev:web` 只是浏览器 UI 演示，不会读取仓库、运行 Agent 或操作 Git。
 
+如果 Agent 提示所选模型需要更新的 Codex 版本，可以升级 CLI，或指定本机已经安装的新版程序。macOS 安装了 Codex 桌面应用时，可使用：
+
+```bash
+NOVEL_OBSERVER_CODEX_PATH=/Applications/Codex.app/Contents/Resources/codex npm run dev
+```
+
+在右侧 Agent 面板核对显示的版本与登录状态，再重试原任务；工作台不会自动换模型或重复写正文。
+
 ## 2. 从头新建一篇小说
 
 无论是否已经打开其他作品，都可以点击左侧作品标题右侧的“作品与仓库”按钮：
