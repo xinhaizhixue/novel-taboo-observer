@@ -778,7 +778,7 @@ function EditorWorkspace(props: { buffer: BufferState | null; comments: Observer
     <span className="editor-tool-divider" />
     <button title="切换 Markdown 预览" aria-label="切换 Markdown 预览" className={props.preview ? 'active' : ''} onClick={props.onTogglePreview}><Columns2 size={15} /><span className="tool-label">预览</span></button>
     <button title="切换专注写作" aria-label="切换专注写作" className={props.focusMode ? 'active' : ''} onClick={props.onToggleFocus}><Maximize2 size={15} /><span className="tool-label">专注</span></button>
-  </div></div>{props.readOnly && <div className="agent-lock"><Bot size={15} />Writer 正在修改这个范围。停止任务后即可接管。</div>}<div className={`editor-stage ${props.preview ? 'split-preview' : ''}`}><Editor value={props.buffer.content} comments={props.comments} readOnly={props.readOnly} focusMode={props.focusMode} onChange={props.onChange} onBlur={() => {}} onCreate={props.onCreateEditor} />{props.preview && <MarkdownPreview content={props.buffer.content} />}</div></div>;
+  </div></div>{props.readOnly && <div className="agent-lock"><Bot size={15} />Writer 正在修改这个范围。停止任务后即可接管。</div>}<div className={`editor-stage ${props.preview ? 'split-preview' : ''}`}><Editor key={props.buffer.path} value={props.buffer.content} comments={props.comments} readOnly={props.readOnly} focusMode={props.focusMode} onChange={props.onChange} onBlur={() => {}} onCreate={props.onCreateEditor} />{props.preview && <MarkdownPreview content={props.buffer.content} />}</div></div>;
 }
 
 function LegacyTasksPanel({ project, onRefresh }: { project: ProjectState; onRefresh(): Promise<void> }) {

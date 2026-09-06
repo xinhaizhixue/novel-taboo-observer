@@ -1,8 +1,8 @@
 import { createElement, useMemo } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
-import { Decoration, EditorView } from '@codemirror/view';
-import type { Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
+import { observerCommentDecorations } from '@/lib/editor-comments';
 import type { ObserverComment } from '@/shared/types';
 
 interface EditorProps {
@@ -15,18 +15,8 @@ interface EditorProps {
   onCreate(view: EditorView): void;
 }
 
-function commentDecorations(comments: ObserverComment[], length: number): Extension {
-  const ranges = comments
-    .filter((comment) => !['resolved', 'rejected', 'intentional', 'obsolete', 'stale'].includes(comment.status))
-    .map((comment) => ({ from: Math.max(0, Math.min(length, comment.anchor.start)), to: Math.max(0, Math.min(length, comment.anchor.end)), severity: comment.severity }))
-    .filter((range) => range.to > range.from)
-    .sort((a, b) => a.from - b.from || a.to - b.to)
-    .map((range) => Decoration.mark({ class: `observer-mark observer-${range.severity}` }).range(range.from, range.to));
-  return EditorView.decorations.of(Decoration.set(ranges, true));
-}
-
 export function Editor({ value, comments, readOnly, focusMode, onChange, onBlur, onCreate }: EditorProps) {
-  const extensions = useMemo(() => [markdown(), EditorView.lineWrapping, commentDecorations(comments, value.length)], [comments, value.length]);
+  const extensions = useMemo(() => [markdown(), EditorView.lineWrapping, observerCommentDecorations(comments)], [comments]);
   return (
     <div className={`editor-shell ${focusMode ? 'focus-mode' : ''}`} onBlur={onBlur}>
       <CodeMirror

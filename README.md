@@ -98,4 +98,6 @@ series-repo/
 - 工作台只在显式提交对话框中对作者勾选的文件执行 stage + commit，绝不自动 push。
 - Agent 中断后保留已有 diff 和失败状态，不会自动重跑有副作用的步骤。
 
-作者从 [完整使用指南](docs/USER_GUIDE.md) 开始。详细设计见 [产品需求基线](docs/PRODUCT_REQUIREMENTS_V0.2.md)、[架构](docs/ARCHITECTURE.md)、[迁移与恢复](docs/PORTABILITY.md)、[UI 设计与验收规范](docs/UI_DESIGN_SYSTEM.md) 和 [路线图](docs/ROADMAP.md)。
+作者从 [完整使用指南](docs/USER_GUIDE.md) 开始。详细设计见 [产品需求基线](docs/PRODUCT_REQUIREMENTS_V0.2.md)、[架构](docs/ARCHITECTURE.md)、[迁移与恢复](docs/PORTABILITY.md)、[UI 设计与验收规范](docs/UI_DESIGN_SYSTEM.md) 和 [路线图](docs/ROADMAP.md)。最近一次真实作者流程回归及测试限制见 [2026-09-07 验证记录](docs/VALIDATION-2026-09-07.md)。
+
+平台验收夹具与作者实际作品的目标分别管理。验收样书的停止条件不能覆盖作者明确授权的整书写作任务：如果作者要求完成整部作品，应以该作品的正文、结构和篇幅目标验收，不能用平台测试通过代替作品完成。
