@@ -1140,7 +1140,25 @@ function agentEventText(events: AgentEvent[]) {
   return undefined;
 }
 
-function AgentRecord({ record, events, onRefresh }: { record: AgentTaskRecord; events: AgentEvent[]; onRefresh(): Promise<void> }) { const [open, setOpen] = useState(record.state === 'running'); const [message, setMessage] = useState(''); const [sending, setSending] = useState(false); const progress = record.finalMessage || agentEventText(events) || (record.state === 'running' ? 'Agent 已连接，正在读取上下文…' : '没有可显示的结果摘要。'); return <article className={`agent-record agent-${record.state}`}><button className="agent-record-head" onClick={() => setOpen(!open)}><span className={`agent-state-dot ${record.state}`} /><div><b>{record.role}</b><small>{record.objective}</small></div><span>{AGENT_STATE_LABEL[record.state]}</span></button>{open && <div className="agent-record-body"><p>{progress}</p>{record.sessionId && <small className="agent-session-id">会话 {record.sessionId.slice(0, 12)}…</small>}{record.changedFiles.length > 0 && <div className="changed-files">修改：{record.changedFiles.join('、')}</div>}{record.verifiedTextFiles?.length ? <div className="verified-text-files"><b>工作台核验</b>{record.verifiedTextFiles.map((file) => <span key={file.path}>{file.path} · {file.nonWhitespaceCharacters.toLocaleString()} 个非空白字符</span>)}</div> : null}{record.error && <div className="form-error">{record.error}</div>}{record.state === 'running' && <button onClick={async () => { await window.workbench.cancelAgent(record.id); await onRefresh(); }}><Square size={13} />停止并接管</button>}{record.state !== 'running' && record.sessionId && <div className="agent-followup"><textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="追问、补充反馈，或要求在原授权范围内继续…" /><button disabled={!message.trim() || sending} onClick={async () => { setSending(true); try { await window.workbench.sendAgentMessage(record.id, message); setMessage(''); await onRefresh(); } finally { setSending(false); } }}>续接会话</button></div>}</div>}</article>; }
+function AgentRecord({ record, events, onRefresh }: { record: AgentTaskRecord; events: AgentEvent[]; onRefresh(): Promise<void> }) {
+  const [open, setOpen] = useState(record.state === 'running');
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const progress = record.finalMessage || agentEventText(events) || (record.state === 'running' ? 'Agent 已连接，正在读取上下文…' : '没有可显示的结果摘要。');
+  return <article className={`agent-record agent-${record.state}`}>
+    <button className="agent-record-head" onClick={() => setOpen(!open)}><span className={`agent-state-dot ${record.state}`} /><div><b>{record.role}</b><small>{record.objective}</small></div><span>{AGENT_STATE_LABEL[record.state]}</span></button>
+    {open && <div className="agent-record-body">
+      <p>{progress}</p>
+      {record.sessionId && <small className="agent-session-id">会话 {record.sessionId.slice(0, 12)}…</small>}
+      {record.changedFiles.length > 0 && <div className="changed-files">修改：{record.changedFiles.join('、')}</div>}
+      {Boolean(record.concurrentAuthorFiles?.length) && <div className="changed-files">同期作者编辑（不计入 Agent 修改）：{record.concurrentAuthorFiles!.join('、')}</div>}
+      {record.verifiedTextFiles?.length ? <div className="verified-text-files"><b>工作台核验</b>{record.verifiedTextFiles.map((file) => <span key={file.path}>{file.path} · {file.nonWhitespaceCharacters.toLocaleString()} 个非空白字符</span>)}</div> : null}
+      {record.error && <div className="form-error">{record.error}</div>}
+      {record.state === 'running' && <button onClick={async () => { await window.workbench.cancelAgent(record.id); await onRefresh(); }}><Square size={13} />停止并接管</button>}
+      {record.state !== 'running' && record.sessionId && <div className="agent-followup"><textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="追问、补充反馈，或要求在原授权范围内继续…" /><button disabled={!message.trim() || sending} onClick={async () => { setSending(true); try { await window.workbench.sendAgentMessage(record.id, message); setMessage(''); await onRefresh(); } finally { setSending(false); } }}>续接会话</button></div>}
+    </div>}
+  </article>;
+}
 
 function ContextPanel({ pack, onBuild, onChange }: { pack: ContextPack | null; onBuild(): void; onChange(pack: ContextPack): void }) {
   const [note, setNote] = useState('');

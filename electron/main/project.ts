@@ -62,6 +62,8 @@ export class ProjectService {
   private events?: EventStore;
   private git?: GitService;
   private openedDirty = new Set<string>();
+  private authorRevision = 0;
+  private readonly authorEdits = new Map<string, { revision: number; hash: string }>();
   constructor(private readonly sessionId: string) {}
 
   get isActive() { return Boolean(this.root && this.manifest); }
@@ -69,6 +71,18 @@ export class ProjectService {
   get activeManifest() { if (!this.manifest) throw new Error('尚未打开作品仓库'); return this.manifest; }
   get eventStore() { if (!this.events) throw new Error('尚未打开作品仓库'); return this.events; }
   get gitService() { if (!this.git) throw new Error('尚未打开作品仓库'); return this.git; }
+  get authorEditRevision() { return this.authorRevision; }
+
+  isAuthorEditSince(file: string, hash: string, revision: number) {
+    const edit = this.authorEdits.get(file);
+    return Boolean(edit && edit.revision > revision && edit.hash === hash);
+  }
+
+  private recordAuthorEdit(file: string, hash: string) {
+    // Only in-process workbench operations issue these receipts. A repository
+    // event or an Agent's claimed origin is not proof that the author wrote it.
+    this.authorEdits.set(file, { revision: ++this.authorRevision, hash });
+  }
 
   async create(input: { root: string; title: string; kind: 'series' | 'novel'; idea?: string; targetCharacters?: number }) {
     const root = path.resolve(input.root);
@@ -162,6 +176,7 @@ export class ProjectService {
     this.manifest = { ...this.activeManifest, activeWorkId: id, updatedAt: now(), works: [...this.activeManifest.works, work] };
     await writeJson(path.join(this.activeRoot, MANIFEST_PATH), this.manifest);
     await atomicWrite(path.join(this.activeRoot, manuscriptRoot, '第一章.md'), '# 第一章\n\n');
+    this.recordAuthorEdit(`${manuscriptRoot}/第一章.md`, hashText('# 第一章\n\n'));
     await this.eventStore.append('project.position', { filePath: `${manuscriptRoot}/第一章.md`, stage: '灵感与创作意图', focus: `为《${title}》确定可开书方向` }, 'system');
     return this.state();
   }
@@ -239,6 +254,8 @@ export class ProjectService {
   }
 
   private async activate(root: string, manifest: ProjectManifest, openedDirty = new Set<string>()) {
+    this.authorEdits.clear();
+    this.authorRevision += 1;
     this.root = root;
     this.manifest = manifest;
     this.events = new EventStore(root, this.sessionId);
@@ -355,6 +372,7 @@ export class ProjectService {
       if (expectedHash && disk.hash !== expectedHash) return { path: relative, ...disk, conflict: { diskContent: disk.content, expectedHash, actualHash: disk.hash } };
     }
     await atomicWrite(target, content);
+    this.recordAuthorEdit(relative, hashText(content));
     return { path: relative, ...(await fileInfo(target)) };
   }
 
@@ -366,8 +384,11 @@ export class ProjectService {
     const target = path.join(this.activeRoot, to);
     if (!(await exists(source))) throw new Error(`源文件“${from}”不存在`);
     if (await exists(target)) throw new Error(`目标文件“${to}”已经存在，未覆盖任何内容`);
+    const sourceHash = hashText(await readFile(source));
     await mkdir(path.dirname(target), { recursive: true });
     await rename(source, target);
+    this.recordAuthorEdit(from, 'missing');
+    this.recordAuthorEdit(to, sourceHash);
     return { from, to };
   }
 

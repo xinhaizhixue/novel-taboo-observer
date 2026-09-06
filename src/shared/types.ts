@@ -283,6 +283,8 @@ export interface AgentTaskRecord {
   endedAt?: string;
   startHashes: Record<string, string>;
   changedFiles: string[];
+  /** Concurrent edits verified against in-process workbench save/move receipts. */
+  concurrentAuthorFiles?: string[];
   /** Workbench-computed facts. Never trust an Agent's prose summary for these values. */
   verifiedTextFiles?: AgentVerifiedTextFile[];
   finalMessage?: string;

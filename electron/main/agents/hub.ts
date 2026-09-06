@@ -152,6 +152,7 @@ export class AgentHub {
     if (!adapter) throw new Error(`未知 Agent 适配器：${input.adapterId}`);
     const info = await adapter.info();
     if (!info.available) throw new Error(info.reason || `${info.name} 当前不可用`);
+    const authorRevision = this.project.authorEditRevision;
     const startFiles = (await this.project.files()).map((file) => file.path);
     const baselineHashes = await this.project.hashFiles(startFiles);
     const persistedStartHashes = readOnly ? {} : Object.fromEntries(Object.entries(baselineHashes).filter(([file]) => allowedPath(file, input.scope)));
@@ -196,7 +197,9 @@ export class AgentHub {
       record.endedAt = now();
       const endFiles = (await this.project.files()).map((file) => file.path);
       const endHashes = await this.project.hashFiles([...new Set([...startFiles, ...endFiles])]);
-      record.changedFiles = Object.keys(endHashes).filter((file) => endHashes[file] !== baselineHashes[file]);
+      const observedChanges = Object.keys(endHashes).filter((file) => endHashes[file] !== baselineHashes[file]);
+      record.concurrentAuthorFiles = observedChanges.filter((file) => this.project.isAuthorEditSince(file, endHashes[file], authorRevision));
+      record.changedFiles = observedChanges.filter((file) => !record.concurrentAuthorFiles!.includes(file));
       record.verifiedTextFiles = await this.verifiedTextFiles(record.changedFiles);
       const unauthorized = readOnly ? record.changedFiles : record.changedFiles.filter((file) => !allowedPath(file, input.scope));
       if (result.exitCode !== 0) {
@@ -385,6 +388,7 @@ export class AgentHub {
     let rawLogQueue = Promise.resolve();
     let streamedRaw = false;
     const recordRaw = (line: string) => { streamedRaw = true; rawLogQueue = rawLogQueue.then(() => appendFile(rawLogPath, line.endsWith('\n') ? line : `${line}\n`, 'utf8')).catch(() => {}); };
+    const authorRevision = this.project.authorEditRevision;
     const startFiles = (await this.project.files()).map((file) => file.path);
     const startHashes = await this.project.hashFiles(startFiles);
     record.state = 'running'; record.endedAt = undefined; record.error = undefined; record.finalMessage = undefined;
@@ -409,7 +413,10 @@ export class AgentHub {
       await sessionPersistence;
       const endFiles = (await this.project.files()).map((file) => file.path);
       const endHashes = await this.project.hashFiles([...new Set([...startFiles, ...endFiles])]);
-      const changed = Object.keys(endHashes).filter((file) => endHashes[file] !== startHashes[file]);
+      const observedChanges = Object.keys(endHashes).filter((file) => endHashes[file] !== startHashes[file]);
+      const authorChanged = observedChanges.filter((file) => this.project.isAuthorEditSince(file, endHashes[file], authorRevision));
+      const changed = observedChanges.filter((file) => !authorChanged.includes(file));
+      record.concurrentAuthorFiles = [...new Set([...(record.concurrentAuthorFiles ?? []), ...authorChanged])];
       const unauthorized = record.role === 'writer' ? changed.filter((file) => !allowedPath(file, record.scope)) : changed;
       record.changedFiles = [...new Set([...record.changedFiles, ...changed])];
       record.verifiedTextFiles = await this.verifiedTextFiles(record.changedFiles);
