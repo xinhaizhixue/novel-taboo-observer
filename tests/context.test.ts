@@ -4,11 +4,38 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ProjectService } from '../electron/main/project.js';
 import { ContextAssembler } from '../electron/main/context.js';
+import type { ObserverComment } from '../src/shared/types.js';
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe('任务上下文中的研究资料', () => {
+  it('把旧评论的新理由连同适用范围带入后续 Agent 上下文', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-context-feedback-'));
+    roots.push(root);
+    const project = new ProjectService('context-feedback');
+    await project.create({ root, title: '反馈上下文', kind: 'novel' });
+    for (let index = 0; index < 5; index += 1) {
+      const timestamp = `2026-08-30T00:00:0${index}.000Z`;
+      const comment: ObserverComment = {
+        id: `feedback-${index}`, issueType: '节奏', severity: 'suggestion', summary: '节奏建议', evidence: '原文证据', suggestedAction: '调整节奏', status: 'intentional', reviewCount: 0,
+        anchor: { filePath: 'manuscript/第一章.md', start: 0, end: 1, quote: '#', prefix: '', suffix: '', snapshotId: 'snapshot', snapshotHash: 'hash' },
+        messages: [{ id: `reason-${index}`, source: 'author', body: '有意保留', createdAt: timestamp }], createdAt: timestamp, updatedAt: timestamp
+      };
+      await project.eventStore.append('comment.created', comment as never, 'observer');
+    }
+    const first = (await project.state()).comments[0];
+    const reason = '本章保留安静收束；仅适用于这次场景，不是全书通用规则。';
+    await project.eventStore.append('comment.updated', { ...first, messages: [...first.messages, { id: 'supplement', source: 'author', body: reason, createdAt: '2026-08-31T00:00:00.000Z' }, { id: 'review-1', source: 'observer', body: '解释一', createdAt: '2026-08-31T00:00:01.000Z' }, { id: 'review-2', source: 'observer', body: '解释二', createdAt: '2026-08-31T00:00:02.000Z' }] } as never, 'author');
+    const pack = await new ContextAssembler(project).build({ task: '继续下一场景', budget: 12_000 });
+    const item = pack.items.find((candidate) => candidate.kind === 'workbench-state');
+    expect(item?.included).toBe(true);
+    const state = JSON.parse(item!.content);
+    expect(state.recentAuthorFeedback.map((comment: { id: string }) => comment.id)).toEqual(['feedback-0', 'feedback-4', 'feedback-3']);
+    expect(state.recentAuthorFeedback[0].latestAuthorFeedback.body).toBe(reason);
+    expect(state.recentAuthorFeedback[0].status).toBe('intentional');
+  });
+
   it('Researcher 产物可被相关任务选入，并明确不等于正典', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-context-research-'));
     roots.push(root);

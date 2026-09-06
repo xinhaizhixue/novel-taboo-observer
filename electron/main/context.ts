@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ContextItem, ContextPack } from '../../src/shared/types.js';
+import { recentAuthorFeedback } from '../../src/lib/comments.js';
 import { ProjectService } from './project.js';
 import { now, uid } from './utils.js';
 
@@ -88,7 +89,7 @@ export class ContextAssembler {
     const compactTask = (task: typeof state.tasks[number]) => ({ title: task.title, status: task.status, kind: task.kind, assignee: task.assignee, whyNow: task.whyNow, known: task.known.slice(0, 3), missingDecisions: task.missingDecisions.slice(0, 2), completionCriteria: task.completionCriteria.slice(0, 2) });
     const compactComment = (comment: typeof state.comments[number]) => ({ id: comment.id, issueType: comment.issueType, severity: comment.severity, summary: comment.summary, suggestedAction: comment.suggestedAction, status: comment.status, anchor: { filePath: comment.anchor.filePath, quote: comment.anchor.quote }, messages: comment.messages.slice(-2) });
     const goal = state.continueCard.goal ? { title: state.continueCard.goal.title, description: state.continueCard.goal.description, level: state.continueCard.goal.level, authority: state.continueCard.goal.authority, status: state.continueCard.goal.status, target: state.continueCard.goal.target } : undefined;
-    const structured = JSON.stringify({ currentGoal: goal, nextTasks: state.continueCard.next.map(compactTask), blockers: state.continueCard.blockers.map(compactTask), relevantFacts, openComments: state.comments.filter((item) => item.status === 'open').slice(0, 5).map(compactComment), recentAuthorFeedback: state.comments.filter((item) => item.messages.some((message) => message.source === 'author')).slice(-3).map(compactComment), authorProfileSnapshot: compactProfileSnapshot(state.manifest.authorProfile?.snapshot) }, null, 2);
+    const structured = JSON.stringify({ currentGoal: goal, nextTasks: state.continueCard.next.map(compactTask), blockers: state.continueCard.blockers.map(compactTask), relevantFacts, openComments: state.comments.filter((item) => item.status === 'open').slice(0, 5).map(compactComment), recentAuthorFeedback: recentAuthorFeedback(state.comments).map(({ comment, latestAuthorFeedback }) => ({ ...compactComment(comment), latestAuthorFeedback })), authorProfileSnapshot: compactProfileSnapshot(state.manifest.authorProfile?.snapshot) }, null, 2);
     candidates.push({ id: uid('ctx'), kind: 'workbench-state', title: '当前目标、任务、事实与评论', source: '.novel/events/', content: structured, reason: '工作台从可迁移事件中重建的当前创作状态', characters: structured.length, included: false, score: 90 });
     const ranked = candidates.sort((a, b) => b.score - a.score);
     let used = 0;

@@ -1012,38 +1012,45 @@ function LegacyCommentsPanel({ comments, running, canCancel, error, active, coun
 
 function CommentsPanel({ comments, running, canCancel, canAnalyze, error, active, count, budget, agents, adapter, onAdapter, onToggle, onAnalyze, onCancel, onSelect, onFeedback, onSendWriter }: { comments: ObserverComment[]; running: boolean; canCancel: boolean; canAnalyze: boolean; error: string | null; active: boolean; count: number; budget: number; agents: AgentAdapterInfo[]; adapter: AgentAdapterInfo['id']; onAdapter(value: AgentAdapterInfo['id']): void; onToggle(): void; onAnalyze(): void; onCancel(): void; onSelect(comment: ObserverComment): void; onFeedback(comment: ObserverComment, action: 'accept' | 'reject' | 'defer' | 'review' | 'explain' | 'intentional', reason?: string): Promise<void>; onSendWriter(comment: ObserverComment): Promise<void> }) {
   const { actionable: visible, history } = partitionObserverComments(comments);
-  const [rejecting, setRejecting] = useState<ObserverComment | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
-  const [rejectingBusy, setRejectingBusy] = useState(false);
-  const submitReject = async (submittedReason?: string) => {
-    if (!rejecting || rejectingBusy) return;
-    setRejectingBusy(true);
-    try { await onFeedback(rejecting, 'reject', (submittedReason ?? rejectReason).trim() || undefined); setRejecting(null); setRejectReason(''); }
-    finally { setRejectingBusy(false); }
+  type Decision = 'reject' | 'defer' | 'intentional';
+  const labels: Record<Decision, string> = { reject: '拒绝建议', defer: '暂缓处理', intentional: '有意保留' };
+  const [decision, setDecision] = useState<{ comment: ObserverComment; action: Decision } | null>(null);
+  const [feedbackReason, setFeedbackReason] = useState('');
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
+  const openFeedback = (comment: ObserverComment, action: Decision) => {
+    setDecision({ comment, action }); setFeedbackReason(''); setFeedbackError('');
+  };
+  const submitFeedback = async (submittedReason: string) => {
+    if (!decision || feedbackBusy) return;
+    setFeedbackBusy(true); setFeedbackError('');
+    try { await onFeedback(decision.comment, decision.action, submittedReason.trim() || undefined); setDecision(null); setFeedbackReason(''); }
+    catch (error) { setFeedbackError(errorMessage(error)); }
+    finally { setFeedbackBusy(false); }
   };
   return <div className="panel-content comments-panel">
     <div className="observer-control"><div><span className={`pulse ${active ? 'on' : ''}`} /><div><b>Observer {active ? '观察中' : '已停止'}</b><small>{active ? `本会话 ${count}/${budget} 次自动分析` : '主动开启后持续陪跑'}</small></div></div><button onClick={onToggle}>{active ? <Square size={14} /> : <Play size={14} />}{active ? '停止' : '开启'}</button></div>
     <select className="observer-adapter" value={adapter} onChange={(event) => onAdapter(event.target.value as AgentAdapterInfo['id'])}>{agents.map((agent) => <option key={agent.id} value={agent.id} disabled={!agent.available}>{agent.name}{agent.available ? '' : '（不可用）'}</option>)}</select>
     {error && <div className="observer-run-error"><CircleAlert size={14} /><span><b>上次检查未完成</b>{error}</span></div>}
     <button className={`manual-check ${running ? 'is-cancel' : ''}`} disabled={!canAnalyze || (running && !canCancel)} onClick={running ? onCancel : onAnalyze}>{running ? (canCancel ? <Square size={16} /> : <LoaderCircle className="spin" size={16} />) : <Eye size={16} />}{!canAnalyze ? '先打开正文' : running ? (canCancel ? '停止本次检查' : '正在启动 Observer…') : error ? '重试检查' : '立即检查当前正文'}</button>
-    {!visible.length && history.length ? <CommentHistory comments={history} onSelect={onSelect} defaultOpen /> : null}
-    {visible.length ? visible.map((comment) => <article className={`comment-card severity-${comment.severity} status-${comment.status}`} key={comment.id} onClick={() => onSelect(comment)}><div className="comment-meta"><span>{comment.issueType}</span><b>{comment.severity === 'blocking' ? '阻塞' : comment.severity === 'warning' ? '注意' : '建议'}</b></div><h4>{comment.summary}</h4><blockquote>{comment.anchor.quote}</blockquote><p>{comment.evidence}</p><div className="suggested-action"><WandSparkles size={14} />{comment.suggestedAction}</div>{comment.messages.length > 1 && <div className="comment-thread">{comment.messages.slice(1).map((message) => <p key={message.id}><b>{message.source === 'author' ? '作者' : 'Observer'}</b>{message.body}</p>)}</div>}{comment.status === 'stale' && <div className="stale-note">基于旧版本；原文字已变化，不挂到当前文字。</div>}<div className="comment-actions" onClick={(event) => event.stopPropagation()}>{comment.severity === 'blocking' && <button className="send-writer" onClick={() => void onSendWriter(comment)}><Bot size={12} />发回 Writer</button>}<button onClick={() => void onFeedback(comment, 'accept')}>接受</button><button onClick={() => { setRejecting(comment); setRejectReason(''); }}>拒绝</button><button onClick={() => void onFeedback(comment, 'defer')}>暂缓</button><button onClick={() => void onFeedback(comment, 'explain')}>要求解释</button><button onClick={() => void onFeedback(comment, 'review')}>修改后复查</button><button onClick={() => void onFeedback(comment, 'intentional')}>有意保留</button></div></article>) : <div className="panel-empty"><MessageSquareText size={28} /><b>还没有当前章节评论</b><span>Observer 会在停顿后分析，也可以立即检查。</span></div>}
-    {visible.length && history.length ? <CommentHistory comments={history} onSelect={onSelect} /> : null}
-    {rejecting && <Modal title="拒绝 Observer 建议" onClose={() => setRejecting(null)}><form onSubmit={(event) => { event.preventDefault(); void submitReject(String(new FormData(event.currentTarget).get('reason') || '')); }}><p className="modal-lead">拒绝不会改正文。补充原因可以帮助后续 Observer 区分你的写法、刻意保留和真正误报。</p><label>拒绝原因（可选）<textarea name="reason" autoFocus value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="例如：这是有意制造的信息差，下一章会回收。" /></label><div className="modal-actions"><button type="button" onClick={() => setRejecting(null)}>取消</button><button type="submit" className="primary" disabled={rejectingBusy}>{rejectingBusy ? '正在记录…' : '确认拒绝'}</button></div></form></Modal>}
+    {!visible.length && history.length ? <CommentHistory comments={history} onSelect={onSelect} onFeedback={openFeedback} defaultOpen /> : null}
+    {visible.length ? visible.map((comment) => <article className={`comment-card severity-${comment.severity} status-${comment.status}`} key={comment.id} onClick={() => onSelect(comment)}><div className="comment-meta"><span>{comment.issueType}</span><b>{comment.severity === 'blocking' ? '阻塞' : comment.severity === 'warning' ? '注意' : '建议'}</b></div><h4>{comment.summary}</h4><blockquote>{comment.anchor.quote}</blockquote><p>{comment.evidence}</p><div className="suggested-action"><WandSparkles size={14} />{comment.suggestedAction}</div>{comment.messages.length > 1 && <div className="comment-thread">{comment.messages.slice(1).map((message) => <p key={message.id}><b>{message.source === 'author' ? '作者' : 'Observer'}</b>{message.body}</p>)}</div>}{comment.status === 'stale' && <div className="stale-note">基于旧版本；原文字已变化，不挂到当前文字。</div>}<div className="comment-actions" onClick={(event) => event.stopPropagation()}>{comment.severity === 'blocking' && <button className="send-writer" onClick={() => void onSendWriter(comment)}><Bot size={12} />发回 Writer</button>}<button onClick={() => void onFeedback(comment, 'accept')}>接受</button><button onClick={() => openFeedback(comment, 'reject')}>拒绝</button><button onClick={() => openFeedback(comment, 'defer')}>暂缓</button><button onClick={() => void onFeedback(comment, 'explain')}>要求解释</button><button onClick={() => void onFeedback(comment, 'review')}>修改后复查</button><button onClick={() => openFeedback(comment, 'intentional')}>有意保留</button></div></article>) : <div className="panel-empty"><MessageSquareText size={28} /><b>还没有当前章节评论</b><span>Observer 会在停顿后分析，也可以立即检查。</span></div>}
+    {visible.length && history.length ? <CommentHistory comments={history} onSelect={onSelect} onFeedback={openFeedback} /> : null}
+    {decision && <Modal title={`${labels[decision.action]} · Observer 反馈`} locked={feedbackBusy} onClose={() => setDecision(null)}><form onSubmit={(event) => { event.preventDefault(); void submitFeedback(String(new FormData(event.currentTarget).get('reason') || '')); }}><p className="modal-lead">{decision.comment.summary}</p><p className="modal-lead">这里只记录反馈，不改正文。理由会随评论保留，供后续 Agent 理解本次创作取舍；不会自动变成所有作品的风格规则。</p><label>反馈理由（可选）<textarea name="reason" autoFocus value={feedbackReason} onChange={(event) => setFeedbackReason(event.target.value)} placeholder="说明这次取舍、适用范围，或准备何时处理。" disabled={feedbackBusy} /></label>{feedbackError && <p className="form-error" role="alert">{feedbackError}</p>}<div className="modal-actions"><button type="button" disabled={feedbackBusy} onClick={() => setDecision(null)}>取消</button><button type="submit" className="primary" disabled={feedbackBusy}>{feedbackBusy ? '正在记录…' : `确认${labels[decision.action]}`}</button></div></form></Modal>}
   </div>;
 }
 
-function CommentHistory({ comments, onSelect, defaultOpen = false }: { comments: ObserverComment[]; onSelect(comment: ObserverComment): void; defaultOpen?: boolean }) {
+function CommentHistory({ comments, onSelect, onFeedback, defaultOpen = false }: { comments: ObserverComment[]; onSelect(comment: ObserverComment): void; onFeedback?(comment: ObserverComment, action: 'reject' | 'intentional'): void; defaultOpen?: boolean }) {
   return <details className="comment-history" open={defaultOpen}>
     <summary><span><History size={13} />已处理与过期</span><b>{comments.length}</b></summary>
     <div>{comments.map((comment) => {
       const lastMessage = comment.messages.at(-1);
-      return <button type="button" className={`comment-history-card status-${comment.status}`} key={comment.id} onClick={() => onSelect(comment)}>
+      return <div key={comment.id}><button type="button" className={`comment-history-card status-${comment.status}`} onClick={() => onSelect(comment)}>
         <span className="comment-history-meta"><em>{commentStatusLabel(comment.status)}</em><small>{comment.reviewCount ? `已复查 ${comment.reviewCount} 次` : relativeTime(comment.updatedAt)}</small></span>
         <strong>{comment.summary}</strong>
         <q>{comment.anchor.quote}</q>
         <span className="comment-history-result">{lastMessage?.body || comment.evidence}</span>
-      </button>;
+      </button>{onFeedback && (comment.status === 'rejected' || comment.status === 'intentional') && <button type="button" className="comment-history-feedback" onClick={() => onFeedback(comment, comment.status === 'intentional' ? 'intentional' : 'reject')}>补充反馈理由</button>}</div>;
     })}</div>
   </details>;
 }

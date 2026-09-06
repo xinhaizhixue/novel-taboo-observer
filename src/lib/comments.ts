@@ -1,4 +1,4 @@
-import type { CommentStatus, ObserverComment } from '../shared/types';
+import type { CommentStatus, ObserverComment } from '../shared/types.js';
 
 export function commentNeedsAction(comment: ObserverComment) {
   if (['resolved', 'rejected', 'intentional', 'obsolete'].includes(comment.status)) return false;
@@ -12,6 +12,15 @@ export function partitionObserverComments(comments: ObserverComment[]) {
     actionable: ordered.filter(commentNeedsAction),
     history: ordered.filter((comment) => !commentNeedsAction(comment))
   };
+}
+
+export function recentAuthorFeedback(comments: ObserverComment[], limit = 3) {
+  return comments
+    .map((comment) => ({ comment, latest: comment.messages.filter((message) => message.source === 'author').at(-1) }))
+    .filter((item) => item.latest)
+    .sort((left, right) => right.latest!.createdAt.localeCompare(left.latest!.createdAt))
+    .slice(0, Math.max(0, limit))
+    .map(({ comment, latest }) => ({ comment, latestAuthorFeedback: latest! }));
 }
 
 const STATUS_LABELS: Partial<Record<CommentStatus, string>> = {
