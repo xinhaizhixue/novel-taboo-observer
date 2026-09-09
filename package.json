@@ -1,6 +1,6 @@
 {
   "name": "novel-observer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "以 Git 仓库承载作品、桥接通用 Agent 的本地长篇网文写作工作台",
   "author": "Novel Observer contributors",
@@ -80,11 +80,12 @@
   },
   "build": {
     "appId": "com.novelobserver.workbench",
-    "productName": "禁忌观察者",
+    "productName": "叙舟",
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "package.json"
+      "package.json",
+      "assets/**/*"
     ],
     "directories": {
       "output": "release"
@@ -94,7 +95,14 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "icon": "assets/icon.icns"
+    },
+    "win": {
+      "icon": "assets/icon.ico"
+    },
+    "linux": {
+      "icon": "assets/icon.png"
     }
   },
   "engines": {

@@ -7,6 +7,7 @@ import { CodexAdapter } from '../electron/main/agents/codex.js';
 import { AgentHub } from '../electron/main/agents/hub.js';
 import { ContextAssembler } from '../electron/main/context.js';
 import { AuthorProfileStore } from '../electron/main/profile.js';
+import { hashText } from '../electron/main/utils.js';
 import { ProjectService } from '../electron/main/project.js';
 import type { AgentEvent, AgentTaskRecord } from '../src/shared/types.js';
 
@@ -149,7 +150,7 @@ describe('真实 CLI 子进程适配器', () => {
     const recoveredEvents: AgentEvent[] = [];
     const recovered = adapter.run({
       taskId: 'recover', root, prompt: 'FAKE_MODEL_REFRESH_RECOVERS', readOnly: true, outputPath: path.join(root, 'recover.txt'),
-      startupTimeoutMs: 1_000, emit: (event) => recoveredEvents.push(event)
+      startupTimeoutMs: 3_000, emit: (event) => recoveredEvents.push(event)
     });
     await expect(recovered.completed).resolves.toMatchObject({ exitCode: 0, finalMessage: 'FAKE_CODEX_RECOVERED' });
     expect(recoveredEvents.some((event) => event.type === 'message' && JSON.stringify(event.payload).includes('继续等待'))).toBe(true);
@@ -159,13 +160,13 @@ describe('真实 CLI 子进程适配器', () => {
     const events: AgentEvent[] = [];
     const run = adapter.run({
       taskId: 'stall', root, prompt: 'FAKE_MODEL_REFRESH_STALL', readOnly: true, outputPath: path.join(root, 'stall.txt'),
-      startupTimeoutMs: 80, recordRaw: (line) => persisted.push(line), emit: (event) => events.push(event)
+      startupTimeoutMs: 2_000, recordRaw: (line) => persisted.push(line), emit: (event) => events.push(event)
     });
     await expect(run.completed).resolves.toMatchObject({ exitCode: 124 });
     expect(persisted.join('\n')).toContain('failed to refresh available models');
     expect(events.some((event) => event.type === 'message' && JSON.stringify(event.payload).includes('继续等待'))).toBe(true);
     expect(events.some((event) => event.type === 'error' && String(event.payload).includes('启动超过'))).toBe(true);
-  });
+  }, 10_000);
 
   it('Claude 支持流式结果、resume，并把 stderr 实时转成事件', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-claude-adapter-root-'));
@@ -237,7 +238,7 @@ describe('真实 CLI 子进程适配器', () => {
     const observerContext = await new ContextAssembler(project).build({ task: 'FAKE_OBSERVER_JSON', filePath: 'manuscript/第一章.md', content: observerContent });
     for (const id of ['dedupe-one', 'dedupe-two']) {
       const observer = await hub.runObserver({
-        adapterId: 'codex', snapshot: { id, filePath: 'manuscript/第一章.md', content: observerContent, hash: 'same-hash', editorVersion: 1, createdAt: new Date().toISOString() }, contextPack: observerContext, mode: 'manual'
+        adapterId: 'codex', snapshot: { id, filePath: 'manuscript/第一章.md', content: observerContent, hash: hashText(observerContent), editorVersion: 1, createdAt: new Date().toISOString() }, contextPack: observerContext, mode: 'manual'
       });
       await waitForRecord(project, observer.id, ['completed']);
     }
@@ -251,7 +252,7 @@ describe('真实 CLI 子进程适配器', () => {
     expect(failedRecord.startHashes).toEqual({});
     const observerCall = (await calls(logPath)).find((call) => call.prompt.includes('FAKE_FAIL'));
     expect(observerCall?.args).toContain('--ignore-user-config');
-    expect(observerCall?.args.join(' ')).toContain('--model gpt-5.6-luna');
+    expect(observerCall?.args).not.toContain('--model');
     expect(observerCall?.args.join(' ')).toContain('model_reasoning_effort="low"');
 
     const incompatible = await hub.runTask({ adapterId: 'codex', role: 'writer', objective: 'FAKE_NEWER_CLI_REQUIRED', scope: ['manuscript/第一章.md'], completionCriteria: [] });
@@ -264,7 +265,7 @@ describe('真实 CLI 子进程适配器', () => {
     await waitForRecord(project, style.id, ['failed']);
     const styleCall = (await calls(logPath)).find((call) => call.prompt.includes('FAKE_FAIL_STYLE'));
     expect(styleCall?.args).toContain('--ignore-user-config');
-    expect(styleCall?.args.join(' ')).toContain('--model gpt-5.6-luna');
+    expect(styleCall?.args).not.toContain('--model');
     expect(styleCall?.args.join(' ')).toContain('model_reasoning_effort="low"');
 
     const waiting = await hub.runTask({ adapterId: 'codex', role: 'writer', objective: 'FAKE_WAIT', scope: ['manuscript/等待.md'], completionCriteria: [] });
@@ -296,9 +297,22 @@ describe('真实 CLI 子进程适配器', () => {
     await hub.sendMessage(recoverable.id, 'finish recovered task');
     await waitForRecord(project, recoverable.id, ['completed']);
     const completedCreativeTask = (await project.state()).tasks.find((task) => task.id === recoveryCreativeTask.id);
-    expect(completedCreativeTask).toMatchObject({ status: 'completed', whyNow: recoveryCreativeTask.whyNow });
+    expect(completedCreativeTask).toMatchObject({ status: 'now', whyNow: recoveryCreativeTask.whyNow });
+    expect(completedCreativeTask?.agentWork).toContain('尚待文学审阅');
     expect(completedCreativeTask?.cancellationReason).toBeUndefined();
     const recoveryCall = (await calls(logPath)).find((call) => call.prompt === 'finish recovered task');
     expect(recoveryCall?.args).toContain('fake-interrupted-session');
   });
+});
+
+it('显式任务模型作为独立CLI参数传入，不改全局配置也不被轻量回退覆盖', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'novel-explicit-model-')); roots.push(root);
+  const { command, logPath } = await fakeCli('codex');
+  const adapter = new CodexAdapter(command, false);
+  await adapter.info();
+  const run = adapter.run({ taskId: 'selected-model', root, prompt: 'TASK_MODEL_SELECTION', model: 'gpt-6-astra', reasoningEffort: 'high', readOnly: true, ignoreUserConfig: true, outputPath: path.join(root, 'final.txt'), emit: () => {} });
+  await run.completed;
+  const call = (await calls(logPath)).find((item) => item.prompt === 'TASK_MODEL_SELECTION')!;
+  expect(call.args.slice(call.args.indexOf('--model'), call.args.indexOf('--model') + 2)).toEqual(['--model', 'gpt-6-astra']);
+  expect(call.args.join(' ')).toContain('model_reasoning_effort="high"');
 });

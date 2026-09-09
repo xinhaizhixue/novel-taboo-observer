@@ -1,17 +1,28 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { appendFile, chmod, mkdir } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { gunzip } from 'node:zlib';
+import { promisify } from 'node:util';
+import { createPatch } from 'diff';
 import type { AgentAdapterInfo, AgentEvent, AgentRunRequest, AgentTaskRecord, NavigationProposal, ObserverComment, ObserverRunRequest, StoryRoute } from '../../../src/shared/types.js';
 import { ProjectService } from '../project.js';
 import { AuthorProfileStore } from '../profile.js';
 import { makeAnchor } from '../observer.js';
-import { atomicWrite, exec, now, uid, writeJson } from '../utils.js';
+import { atomicWrite, exec, hashText, now, uid, writeJson } from '../utils.js';
 import type { AgentAdapter } from './adapter.js';
 import { ClaudeAdapter } from './claude.js';
 import { CodexAdapter } from './codex.js';
 import { NAVIGATION_SCHEMA, OBSERVER_SCHEMA, STYLE_SCHEMA, observerPrompt, taskPrompt } from './prompts.js';
 
+import { compareNaturalPath } from '../../../src/shared/natural-sort.js';
+import { ContextAssembler } from '../context.js';
+import { addReviewReferences, buildReviewBundle, finishReview, pendingReview, validateReviewQuotes, writerReviewOutcome } from '../literary-review.js';
+import type { ReviewReport } from '../../../src/shared/types.js';
+import { signalAgent } from './terminate.js';
+import { withDeadline } from '../shutdown.js';
+
 interface ActiveTask {
+  cancellation?: Promise<void>;
   process: ChildProcessWithoutNullStreams;
   record: AgentTaskRecord;
   adapter: AgentAdapter;
@@ -63,6 +74,10 @@ function reasoningEffortFor(role: AgentTaskRecord['role']): 'low' | 'medium' | '
 }
 
 export class AgentHub {
+  onWriterCompleted?: (record: AgentTaskRecord) => void;
+
+  async waitForTask(taskId: string) { await this.active.get(taskId)?.settled; }
+  async waitForReviews() { await Promise.all([...this.active.values()].filter((task) => task.record.role === 'observer').map((task) => task.settled.catch(() => {}))); }
   private readonly adapters: Map<AgentAdapterInfo['id'], AgentAdapter>;
   private readonly active = new Map<string, ActiveTask>();
   private readonly startingWriters = new Map<string, string[]>();
@@ -137,13 +152,56 @@ export class AgentHub {
     return this.start(input, taskPrompt(input), !['writer', 'researcher'].includes(input.role), undefined, structured);
   }
 
+  private async waitForConcurrentWriters(taskId: string) {
+    const running = () => [...this.active.entries()].some(([id, task]) => id !== taskId && task.record.role === 'writer');
+    if (!running()) return;
+    this.emit({ taskId, type: 'message', at: now(), payload: '审读已返回，正在等待同期 Writer 结束，以核对正文改动归属。' });
+    while (running() && this.active.get(taskId)?.record.state !== 'cancelled') await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  private async writerComparison(writer: AgentTaskRecord) {
+    const pieces: string[] = [];
+    let remaining = 40_000;
+    for (const filePath of writer.changedFiles) {
+      const hash = writer.startHashes[filePath];
+      if (!hash || hash === 'missing') { pieces.push(`${filePath}：新文件，没有改前正文。`); continue; }
+      try {
+        const blob = path.join(this.appData, 'recovery', this.project.activeManifest.projectId, 'blobs', `${hash}.gz`);
+        const before = (await promisify(gunzip)(await readFile(blob))).toString('utf8');
+        if (hashText(before) !== hash) throw new Error('恢复副本与任务基线不匹配');
+        const after = await this.project.readFile(filePath);
+        const difference = createPatch(filePath, before, after.content, 'Writer开始前', '当前正文', { context: 2 });
+        const part = difference.slice(0, Math.max(0, remaining));
+        pieces.push(part + (part.length < difference.length ? '\n[差异预算不足，后部省略；不得据此断言全部要求已完成]' : ''));
+        remaining -= part.length;
+      } catch { pieces.push(`${filePath}：改前版本不可用，不能验证改写是否充分。`); }
+    }
+    return pieces.join('\n');
+  }
+
   async runObserver(input: ObserverRunRequest) {
-    const run: AgentRunRequest = { adapterId: input.adapterId, role: 'observer', objective: `分析快照 ${input.snapshot.id}`, scope: [input.snapshot.filePath], completionCriteria: ['输出可准确锚定的评论或明确说明没有问题'], contextPack: input.contextPack };
-    return this.start(run, observerPrompt(input), true, input);
+    if (input.sourceWriterTaskId) {
+      const writer = await this.record(input.sourceWriterTaskId);
+      if (writer?.role === 'writer') input = { ...input, writingRequirements: `${writer.objective}\n完成条件：${writer.completionCriteria.join('；')}`, writingComparison: await this.writerComparison(writer) };
+    }
+    // Rebuild evidence in the trusted backend; never trust caller-supplied coverage.
+    input = { ...input, bundle: await buildReviewBundle(this.project, input), reportId: input.mode === 'explain' ? undefined : uid('review') };
+    if (!input.contextPack) input.contextPack = await new ContextAssembler(this.project).build({ task: '逐项文学审阅：人物、语言与连续性', filePath: input.snapshot.filePath, content: input.snapshot.content, budget: 20_000 });
+    if (input.contextPack) {
+      const items = input.contextPack.items.filter((item) => !['manuscript', 'current-buffer'].includes(item.kind));
+      input.contextPack = { ...input.contextPack, items, characters: items.filter((item) => item.included).reduce((sum, item) => sum + item.characters, 0) };
+    }
+    const run: AgentRunRequest = { model: input.model, reasoningEffort: input.reasoningEffort, adapterId: input.adapterId, role: 'observer', objective: `${input.bundle!.scope === 'sequence' ? '联合审阅' : '逐项精读'} ${input.snapshot.filePath}`, scope: input.bundle!.sources.map((source) => source.filePath), completionCriteria: ['完成六个维度的有证据审阅；缺项、失效或未定位意见不能宣布通过'], contextPack: input.contextPack };
+    try { return await this.start(run, observerPrompt(input), true, input); }
+    catch (error) {
+      if (input.reportId) await this.project.eventStore.append('review.report', { ...pendingReview(input, ''), status: 'failed', completedAt: now(), summary: String(error) } as never, 'observer');
+      throw error;
+    }
   }
 
   private async start(input: AgentRunRequest, prompt: string, readOnly: boolean, observer?: ObserverRunRequest, structured?: 'navigation' | 'style') {
     const id = uid('agent-task');
+    if (observer?.reportId) await this.project.eventStore.append('review.report', pendingReview(observer, id) as never, 'observer');
     const duplicate = [...this.active.values()].find((item) => item.record.role === input.role && (input.role === 'observer' || item.record.objective.trim() === input.objective.trim()) && scopesOverlap(item.record.scope, input.scope));
     if (duplicate) throw new Error(`相同的 ${input.role} 任务已经在运行，请等待完成或先停止，避免重复消耗。`);
     if (input.role === 'writer') this.reserveWriter(id, input.scope);
@@ -156,7 +214,8 @@ export class AgentHub {
     const startFiles = (await this.project.files()).map((file) => file.path);
     const baselineHashes = await this.project.hashFiles(startFiles);
     const persistedStartHashes = readOnly ? {} : Object.fromEntries(Object.entries(baselineHashes).filter(([file]) => allowedPath(file, input.scope)));
-    const record: AgentTaskRecord = { id, adapterId: input.adapterId, role: input.role, state: 'running', objective: input.objective, creativeTaskId: input.creativeTaskId, scope: input.scope, completionCriteria: input.completionCriteria, allowNetwork: input.allowNetwork, startedAt: now(), startHashes: persistedStartHashes, changedFiles: [] };
+    const reasoningEffort = input.reasoningEffort ?? (observer ? observer.reviewScope === 'sequence' ? 'high' : 'medium' : reasoningEffortFor(input.role));
+    const record: AgentTaskRecord = { model: input.model, reasoningEffort, id, adapterId: input.adapterId, role: input.role, state: 'running', objective: input.objective, creativeTaskId: input.creativeTaskId, scope: input.scope, completionCriteria: input.completionCriteria, allowNetwork: input.allowNetwork, startedAt: now(), startHashes: persistedStartHashes, changedFiles: [] };
     const directory = path.join(this.appData, 'agents', this.project.activeManifest.projectId, id);
     await mkdir(directory, { recursive: true });
     const outputPath = path.join(directory, 'final.txt');
@@ -184,13 +243,14 @@ export class AgentHub {
       if (activeTask) activeTask.sessionPersistence = sessionPersistence;
       this.emit({ taskId: id, type: 'state', at: now(), payload: { state: record.state, role: record.role, sessionId, phase: 'connected' } });
     };
-    const run = adapter.run({ taskId: id, root: this.project.activeRoot, prompt, readOnly, schemaPath, outputPath, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(input.role) ? 300_000 : 180_000, reasoningEffort: reasoningEffortFor(input.role), ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(input.allowNetwork), recordRaw, onSessionId, emit: (event) => this.emit(event) });
+    const run = adapter.run({ model: input.model, taskId: id, root: this.project.activeRoot, prompt, readOnly, schemaPath, outputPath, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(input.role) ? 300_000 : 180_000, reasoningEffort, ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(input.allowNetwork), recordRaw, onSessionId, emit: (event) => this.emit(event) });
     activeTask = { process: run.process, record, adapter, settled: Promise.resolve(), sessionPersistence };
     this.active.set(id, activeTask);
     this.startingWriters.delete(id);
     this.records.set(id, record);
     this.emit({ taskId: id, type: 'state', at: now(), payload: { state: 'running', role: input.role } });
     const settled = run.completed.then(async (result) => {
+      if (readOnly) await this.waitForConcurrentWriters(id);
       await sessionPersistence;
       record.sessionId = result.sessionId;
       record.finalMessage = result.finalMessage.trim();
@@ -199,10 +259,13 @@ export class AgentHub {
       const endHashes = await this.project.hashFiles([...new Set([...startFiles, ...endFiles])]);
       const observedChanges = Object.keys(endHashes).filter((file) => endHashes[file] !== baselineHashes[file]);
       record.concurrentAuthorFiles = observedChanges.filter((file) => this.project.isAuthorEditSince(file, endHashes[file], authorRevision));
-      record.changedFiles = observedChanges.filter((file) => !record.concurrentAuthorFiles!.includes(file));
+      record.concurrentAgentFiles = observedChanges.filter((file) => this.project.isOtherAgentEditSince(id, file, endHashes[file], authorRevision));
+      record.changedFiles = observedChanges.filter((file) => !record.concurrentAuthorFiles!.includes(file) && !record.concurrentAgentFiles!.includes(file));
       record.verifiedTextFiles = await this.verifiedTextFiles(record.changedFiles);
       const unauthorized = readOnly ? record.changedFiles : record.changedFiles.filter((file) => !allowedPath(file, input.scope));
-      if (result.exitCode !== 0) {
+      if (record.state === 'cancelled') {
+        // Keep author cancellation even if the CLI exits zero or is force-killed.
+      } else if (result.exitCode !== 0) {
         record.state = result.exitCode === 143 ? 'cancelled' : 'failed';
         record.error = result.exitCode === 143 ? record.error || '作者停止了任务；已有文件变化已保留供检查。' : adapterFailure(result.exitCode, result.raw);
       } else if (unauthorized.length) {
@@ -211,13 +274,16 @@ export class AgentHub {
       } else record.state = 'completed';
       await rawLogQueue;
       if (!streamedRaw) await atomicWrite(rawLogPath, `${result.raw.join('\n')}\n`);
-      if (observer && result.exitCode === 0) await this.acceptObserverResult(observer, record.finalMessage || '{}').catch((error) => { record.state = 'failed'; record.error = (error as Error).message; });
+      if (observer && result.exitCode === 0 && record.state === 'completed') await this.acceptObserverResult(observer, record.finalMessage || '{}', id, baselineHashes).catch((error) => { record.state = 'failed'; record.error = (error as Error).message; });
       if (structured === 'navigation' && result.exitCode === 0 && record.state === 'completed') await this.acceptNavigationResult(input, record, record.finalMessage || '{}').catch((error) => { record.state = 'failed'; record.error = (error as Error).message; });
       if (structured === 'style' && result.exitCode === 0 && record.state === 'completed') await this.acceptStyleResult(record.finalMessage || '{}').catch((error) => { record.state = 'failed'; record.error = (error as Error).message; });
+      if (record.role === 'writer') this.project.recordAgentEdits(id, Object.fromEntries(record.changedFiles.filter((file) => allowedPath(file, input.scope)).map((file) => [file, endHashes[file]])));
+      if (observer?.reportId && record.state !== 'completed') await this.project.eventStore.append('review.report', { ...pendingReview(observer, id), status: record.state === 'cancelled' ? 'cancelled' : 'failed', completedAt: now(), summary: record.error || '审阅未完成。' } as never, 'observer');
       await this.project.eventStore.append('agent.task', record as never, input.role === 'observer' ? 'observer' : 'agent');
       await this.syncCreativeTask(record);
       await this.syncProjectPosition(record);
       this.active.delete(id);
+      if (record.state === 'completed' && record.role === 'writer') this.onWriterCompleted?.(record);
       this.emit({ taskId: id, type: record.state === 'failed' ? 'error' : 'state', at: now(), payload: { state: record.state, role: record.role, changedFiles: record.changedFiles, error: record.error ?? null } });
     }).catch(async (error: Error) => {
       await sessionPersistence;
@@ -228,6 +294,7 @@ export class AgentHub {
       this.emit({ taskId: id, type: 'error', at: now(), payload: error.message });
     });
     activeTask.settled = settled;
+    void settled.catch((error) => console.error('Agent finalization failed:', error));
     return record;
     } finally {
       this.startingWriters.delete(id);
@@ -271,15 +338,16 @@ export class AgentHub {
     if (!record.creativeTaskId) return;
     const task = (await this.project.state()).tasks.find((item) => item.id === record.creativeTaskId);
     if (!task) return;
-    const completed = record.state === 'completed' && !['navigator', 'architect'].includes(record.role);
+    const waitingForReview = record.state === 'completed' && record.role === 'writer';
+    const completed = record.state === 'completed' && !['writer', 'navigator', 'architect'].includes(record.role);
     const updated = {
       ...task,
-      status: completed ? 'completed' as const : 'blocked' as const,
+      status: completed ? 'completed' as const : waitingForReview ? 'now' as const : 'blocked' as const,
       whyNow: task.whyNow,
-      agentWork: record.finalMessage || record.error || task.agentWork,
+      agentWork: waitingForReview ? `Writer已交付正文，尚待文学审阅与写作要求核对。\n${record.finalMessage || ''}` : record.finalMessage || record.error || task.agentWork,
       links: [...new Set([...task.links, ...record.changedFiles])],
       updatedAt: now(),
-      cancellationReason: completed ? undefined : ['cancelled', 'failed', 'interrupted'].includes(record.state) ? record.error || `Agent ${record.state}` : task.cancellationReason
+      cancellationReason: completed || waitingForReview ? undefined : ['cancelled', 'failed', 'interrupted'].includes(record.state) ? record.error || `Agent ${record.state}` : task.cancellationReason
     };
     await this.project.eventStore.append('task.upsert', updated as never, 'agent');
   }
@@ -287,7 +355,7 @@ export class AgentHub {
   private async syncProjectPosition(record: AgentTaskRecord) {
     if (record.state !== 'completed' || record.role !== 'writer') return;
     const manuscriptRoots = this.project.activeManifest.works.map((work) => work.manuscriptRoot.replace(/\/$/, ''));
-    const filePath = record.changedFiles.find((file) => manuscriptRoots.some((root) => file === root || file.startsWith(`${root}/`)));
+    const filePath = [...record.changedFiles].sort(compareNaturalPath).reverse().find((file) => manuscriptRoots.some((root) => file === root || file.startsWith(`${root}/`)));
     if (!filePath) return;
     await this.project.markWorkSerializing(filePath);
     const chapter = path.basename(filePath).replace(/\.(?:md|markdown|txt)$/i, '');
@@ -298,7 +366,18 @@ export class AgentHub {
     }, 'agent');
   }
 
-  private async acceptObserverResult(input: ObserverRunRequest, message: string) {
+  private async settleWriterTask(writerId: string) {
+    const writer = await this.record(writerId);
+    if (!writer?.creativeTaskId) return;
+    const state = await this.project.state();
+    const task = state.tasks.find((item) => item.id === writer.creativeTaskId);
+    if (!task) return;
+    const files = writer.changedFiles.filter((file) => state.files.some((item) => item.path === file && item.category === 'manuscript'));
+    const result = writerReviewOutcome(writerId, files, state.reviews ?? []);
+    await this.project.eventStore.append('task.upsert', { ...task, status: result.complete ? 'completed' : 'blocked', agentWork: result.complete ? '当前版本的文学审阅与写作要求核对已完成。' : `文学审阅仍有意见或缺口，待完成：${result.missing.join('、')}`, updatedAt: now(), cancellationReason: undefined } as never, 'observer');
+  }
+
+  private async acceptObserverResult(input: ObserverRunRequest, message: string, taskId: string, baselineHashes: Record<string, string>) {
     const parsed = parseObject(message);
     if (input.mode === 'explain' && input.commentId) {
       const state = await this.project.state();
@@ -310,14 +389,20 @@ export class AgentHub {
       }
       return;
     }
+    await addReviewReferences(this.project, input.bundle!, parsed, baselineHashes);
     const proposed = Array.isArray(parsed.comments) ? parsed.comments as Array<Record<string, unknown>> : [];
     const timestamp = now();
     const created: ObserverComment[] = [];
+    const commentIds: string[] = [];
+    const unanchored: ReviewReport['unanchored'] = [];
     const existingComments = input.mode === 'review' ? [] : [...(await this.project.state()).comments];
     const reusableStatuses = new Set<ObserverComment['status']>(['open', 'accepted', 'deferred', 'review-requested', 'partial', 'unresolved', 'intentional']);
     for (const item of proposed) {
-      const anchor = makeAnchor(input.snapshot.filePath, input.snapshot.content, input.snapshot.id, input.snapshot.hash, { quote: String(item.quote ?? ''), start: Number(item.start ?? 0), end: Number(item.end ?? 0) });
-      if (!anchor) continue;
+      const normalized = { ...item, filePath: item.filePath || input.snapshot.filePath };
+      const checked = validateReviewQuotes(input.bundle!, normalized);
+      const source = checked.source;
+      const anchor = !checked.reason && source ? makeAnchor(source.filePath, source.content, source.id, source.hash, { quote: String(item.quote ?? ''), start: Number(item.start ?? 0), end: Number(item.end ?? 0) }) : null;
+      if (!anchor) { unanchored.push({ filePath: String(normalized.filePath), quote: String(item.quote ?? ''), summary: String(item.summary ?? ''), reason: checked.reason || '无法定位正文。' }); continue; }
       const summary = String(item.summary ?? '');
       const issueType = String(item.issueType ?? '写作建议');
       const existing = existingComments.find((comment) => reusableStatuses.has(comment.status) && comment.anchor.filePath === anchor.filePath && comment.anchor.quote === anchor.quote && (comment.summary === summary || comment.issueType === issueType));
@@ -334,24 +419,32 @@ export class AgentHub {
           messages: existing.messages.at(-1)?.body === repeated ? existing.messages : [...existing.messages, { id: uid('msg'), source: 'observer', body: repeated, createdAt: timestamp }]
         };
         await this.project.eventStore.append('comment.updated', updated as never, 'observer');
+        commentIds.push(updated.id);
         const index = existingComments.findIndex((comment) => comment.id === existing.id);
         if (index >= 0) existingComments[index] = updated;
         continue;
       }
       const comment: ObserverComment = {
-        id: uid('OBS'), issueType, severity: ['suggestion', 'warning', 'blocking'].includes(String(item.severity)) ? item.severity as ObserverComment['severity'] : 'suggestion',
+        id: uid('OBS'), taskId, issueType, severity: ['suggestion', 'warning', 'blocking'].includes(String(item.severity)) ? item.severity as ObserverComment['severity'] : 'suggestion',
         summary, evidence: String(item.evidence ?? ''), suggestedAction: String(item.suggestedAction ?? ''), anchor, status: 'open', reviewCount: input.mode === 'review' ? 1 : 0, messages: [{ id: uid('msg'), source: 'observer', body: summary, createdAt: timestamp }], createdAt: timestamp, updatedAt: timestamp
       };
       created.push(comment);
+      commentIds.push(comment.id);
       existingComments.push(comment);
       await this.project.eventStore.append('comment.created', comment as never, 'observer');
+    }
+    const report = input.reportId ? finishReview(pendingReview(input, taskId), input.bundle!, parsed, commentIds, unanchored) : undefined;
+    if (report) {
+      await this.project.eventStore.append('review.report', report as never, 'observer');
+      if (input.sourceWriterTaskId) await this.settleWriterTask(input.sourceWriterTaskId);
     }
     if (input.mode === 'review' && input.commentId) {
       const state = await this.project.state();
       const original = state.comments.find((item) => item.id === input.commentId);
       if (original) {
         const proposedResult = String(parsed.reviewResult ?? '');
-        const result: ObserverComment['status'] = ['resolved', 'partial', 'unresolved', 'obsolete'].includes(proposedResult) ? proposedResult as ObserverComment['status'] : created.length ? 'partial' : 'resolved';
+        let result: ObserverComment['status'] = ['resolved', 'partial', 'unresolved', 'obsolete'].includes(proposedResult) ? proposedResult as ObserverComment['status'] : created.length ? 'partial' : 'unresolved';
+        if (report?.status === 'incomplete' && result === 'resolved') result = 'unresolved';
         const labels: Partial<Record<ObserverComment['status'], string>> = { resolved: '复查通过：原问题已解决。', partial: '复查结果：问题部分解决，相关意见已重新锚定。', unresolved: '复查结果：问题尚未解决。', obsolete: '复查结果：剧情变化使原建议失效。' };
         const updated: ObserverComment = { ...original, status: result, reviewCount: original.reviewCount + 1, updatedAt: timestamp, messages: [...original.messages, { id: uid('msg'), source: 'observer', body: labels[result] || '复查已完成。', createdAt: timestamp }] };
         await this.project.eventStore.append('comment.updated', updated as never, 'observer');
@@ -362,22 +455,36 @@ export class AgentHub {
   async cancel(taskId: string) {
     const task = this.active.get(taskId);
     if (!task) throw new Error('任务已经结束或不存在');
+    if (task.cancellation) return task.cancellation;
     task.record.state = 'cancelled'; task.record.endedAt = now(); task.record.error = '作者停止了任务；已有文件变化已保留供检查。';
-    await task.sessionPersistence;
-    await this.project.eventStore.append('agent.task', task.record as never, 'author');
-    await this.syncCreativeTask(task.record);
-    task.process.kill('SIGTERM');
-    this.emit({ taskId, type: 'state', at: now(), payload: { state: 'cancelled', role: task.record.role } });
-    await task.settled;
+    // Signal before persistence: a slow disk must not leave the Writer running.
+    signalAgent(task.process, 'SIGTERM');
+    task.cancellation = (async () => {
+      try { await withDeadline(task.settled, 3_000, 'Agent 未响应停止请求'); }
+      catch {
+        signalAgent(task.process, 'SIGKILL');
+        await withDeadline(task.settled, 2_000, 'Agent 已强制停止，结束记录尚未完成');
+      }
+    })();
+    return task.cancellation;
   }
 
-  async cancelAll() { await Promise.all([...this.active.keys()].map((id) => this.cancel(id).catch(() => {}))); }
+  forceStopAll() {
+    for (const task of this.active.values()) {
+      try { signalAgent(task.process, 'SIGKILL'); }
+      catch (error) { console.warn('Agent could not be killed:', error); }
+    }
+  }
 
-  async sendMessage(taskId: string, message: string) {
+  async cancelAll() { await Promise.all([...this.active.keys()].map((id) => this.cancel(id))); }
+
+  async sendMessage(taskId: string, message: string, overrides?: Pick<AgentRunRequest, 'model' | 'reasoningEffort'>) {
     const record = await this.record(taskId);
     if (!record) throw new Error('找不到 Agent 任务');
     if (this.active.has(taskId)) throw new Error('该 CLI 不支持向运行中的非交互任务追加消息；可先停止，或等待结束后续接会话。');
     if (!record.sessionId) throw new Error('该任务没有可恢复的会话 ID');
+    if (overrides?.model) record.model = overrides.model;
+    if (overrides?.reasoningEffort) record.reasoningEffort = overrides.reasoningEffort;
     if (record.role === 'writer') this.reserveWriter(taskId, record.scope, taskId);
     try {
     const adapter = this.adapters.get(record.adapterId)!;
@@ -406,22 +513,26 @@ export class AgentHub {
       });
       if (activeTask) activeTask.sessionPersistence = sessionPersistence;
     };
-    const run = adapter.run({ taskId, root: this.project.activeRoot, prompt: message, readOnly: !['writer', 'researcher'].includes(record.role), outputPath: path.join(directory, `final-${Date.now()}.txt`), sessionId: record.sessionId, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(record.role) ? 300_000 : 180_000, reasoningEffort: reasoningEffortFor(record.role), ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(record.allowNetwork), recordRaw, onSessionId, emit: (event) => this.emit(event) });
+    const run = adapter.run({ model: record.model, taskId, root: this.project.activeRoot, prompt: message, readOnly: !['writer', 'researcher'].includes(record.role), outputPath: path.join(directory, `final-${Date.now()}.txt`), sessionId: record.sessionId, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(record.role) ? 300_000 : 180_000, reasoningEffort: record.reasoningEffort ?? reasoningEffortFor(record.role), ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(record.allowNetwork), recordRaw, onSessionId, emit: (event) => this.emit(event) });
     activeTask = { process: run.process, record, adapter, settled: Promise.resolve(), sessionPersistence };
     this.active.set(taskId, activeTask);
     const settled = run.completed.then(async (result) => {
+      if (!['writer', 'researcher'].includes(record.role)) await this.waitForConcurrentWriters(taskId);
       await sessionPersistence;
       const endFiles = (await this.project.files()).map((file) => file.path);
       const endHashes = await this.project.hashFiles([...new Set([...startFiles, ...endFiles])]);
       const observedChanges = Object.keys(endHashes).filter((file) => endHashes[file] !== startHashes[file]);
       const authorChanged = observedChanges.filter((file) => this.project.isAuthorEditSince(file, endHashes[file], authorRevision));
-      const changed = observedChanges.filter((file) => !authorChanged.includes(file));
+      const agentChanged = observedChanges.filter((file) => this.project.isOtherAgentEditSince(taskId, file, endHashes[file], authorRevision));
+      record.concurrentAgentFiles = [...new Set([...(record.concurrentAgentFiles ?? []), ...agentChanged])];
+      const changed = observedChanges.filter((file) => !authorChanged.includes(file) && !agentChanged.includes(file));
       record.concurrentAuthorFiles = [...new Set([...(record.concurrentAuthorFiles ?? []), ...authorChanged])];
       const unauthorized = record.role === 'writer' ? changed.filter((file) => !allowedPath(file, record.scope)) : changed;
       record.changedFiles = [...new Set([...record.changedFiles, ...changed])];
       record.verifiedTextFiles = await this.verifiedTextFiles(record.changedFiles);
-      record.state = result.exitCode === 143 ? 'cancelled' : result.exitCode !== 0 ? 'failed' : unauthorized.length ? 'awaiting-author' : 'completed';
-      record.error = unauthorized.length ? `续接会话产生授权范围外变化：${unauthorized.join('、')}` : result.exitCode === 0 ? undefined : result.exitCode === 143 ? record.error || '作者停止了任务；已有文件变化已保留供检查。' : adapterFailure(result.exitCode, result.raw);
+      record.state = record.state === 'cancelled' ? 'cancelled' : result.exitCode === 143 ? 'cancelled' : result.exitCode !== 0 ? 'failed' : unauthorized.length ? 'awaiting-author' : 'completed';
+      record.error = record.state === 'cancelled' ? record.error : unauthorized.length ? `续接会话产生授权范围外变化：${unauthorized.join('、')}` : result.exitCode === 0 ? undefined : result.exitCode === 143 ? record.error || '作者停止了任务；已有文件变化已保留供检查。' : adapterFailure(result.exitCode, result.raw);
+      if (record.role === 'writer') this.project.recordAgentEdits(taskId, Object.fromEntries(changed.filter((file) => allowedPath(file, record.scope)).map((file) => [file, endHashes[file]])));
       record.finalMessage = result.finalMessage; record.endedAt = now(); record.sessionId = result.sessionId ?? record.sessionId;
       await rawLogQueue;
       if (!streamedRaw) await appendFile(rawLogPath, `${result.raw.join('\n')}\n`, 'utf8');
@@ -429,6 +540,7 @@ export class AgentHub {
       await this.syncCreativeTask(record);
       await this.syncProjectPosition(record);
       this.active.delete(taskId);
+      if (record.state === 'completed' && record.role === 'writer') this.onWriterCompleted?.(record);
       this.emit({ taskId, type: record.state === 'failed' ? 'error' : 'state', at: now(), payload: { state: record.state, role: record.role, changedFiles: changed, error: record.error ?? null } });
     }).catch(async (error: Error) => {
       await sessionPersistence;
@@ -439,6 +551,7 @@ export class AgentHub {
       this.emit({ taskId, type: 'error', at: now(), payload: { state: 'failed', role: record.role, error: error.message } });
     });
     activeTask.settled = settled;
+    void settled.catch((error) => console.error('Agent finalization failed:', error));
     } finally {
       this.startingWriters.delete(taskId);
     }

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { signalAgent } from './terminate.js';
 import path from 'node:path';
 import type { AgentAdapterInfo, AgentEvent, JsonValue } from '../../../src/shared/types.js';
 import type { AdapterRunOptions, AdapterRunResult, AgentAdapter } from './adapter.js';
@@ -51,7 +52,7 @@ export class ClaudeAdapter implements AgentAdapter {
       '--permission-mode', options.readOnly ? 'plan' : 'acceptEdits',
       ...(options.sessionId ? ['--resume', options.sessionId] : [])
     ];
-    const child = spawn(this.command, args, { cwd: options.root, env: options.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(this.command, args, { cwd: options.root, detached: process.platform !== 'win32', env: options.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin.end();
     const raw: string[] = [];
     let buffer = '';
@@ -67,7 +68,7 @@ export class ClaudeAdapter implements AgentAdapter {
       const message = `Agent 启动超过 ${Math.round(startupTimeoutMs / 1000)} 秒仍没有模型输出，工作台已停止本次任务。`;
       rememberRaw(message);
       options.emit({ taskId: options.taskId, type: 'error', at: now(), payload: message });
-      child.kill('SIGTERM');
+      signalAgent(child, 'SIGTERM');
     }, startupTimeoutMs);
     const publish = (line: string) => {
       if (!line.trim()) return;

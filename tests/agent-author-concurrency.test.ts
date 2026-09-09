@@ -130,3 +130,35 @@ describe('作者编辑与 Agent 修改的归因', () => {
     expect(await hub.record(task.id)).toMatchObject({ state: 'completed', changedFiles: [], concurrentAuthorFiles: ['manuscript/work-2/第一章.md'] });
   });
 });
+
+it('只读审阅不会把同期 Writer 已核实的正文改动误判为自己的越权修改', async () => {
+  const { project, hub, runs, file, observe } = await fixture();
+  const observer = await observe();
+  const writer = await hub.runTask({ adapterId: 'codex', role: 'writer', objective: '同期写另一章', scope: ['manuscript/work-1/第二章.md'], completionCriteria: [] });
+  // Simulate a CLI write, not an author write receipt.
+  await writeFile(path.join(project.activeRoot, 'manuscript/work-1/第二章.md'), '# 第二章\n另一个 Writer 的实际正文。');
+  runs[1].finish('另一章完成');
+  await hub.waitForTask(writer.id);
+  runs[0].finish(cleanReview);
+  await hub.waitForTask(observer.id);
+  const result = await hub.record(observer.id);
+  expect(result?.state).toBe('completed');
+  expect(result?.changedFiles).toEqual([]);
+  expect(result?.concurrentAgentFiles).toContain('manuscript/work-1/第二章.md');
+  expect(result?.concurrentAuthorFiles).not.toContain(file);
+});
+
+it('审读先返回而 Writer 尚在写时等待归因，不抢先宣告只读 Agent 越权', async () => {
+  const { project, hub, runs, observe } = await fixture();
+  const observer = await observe();
+  const writer = await hub.runTask({ adapterId: 'codex', role: 'writer', objective: '较慢的并发 Writer', scope: ['manuscript/work-1/第二章.md'], completionCriteria: [] });
+  runs[0].finish(cleanReview);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect((await hub.record(observer.id))?.state).toBe('running');
+  await writeFile(path.join(project.activeRoot, 'manuscript/work-1/第二章.md'), '# 第二章\n稍后落盘的内容。');
+  runs[1].finish('完成');
+  await hub.waitForTask(writer.id);
+  await hub.waitForTask(observer.id);
+  expect((await hub.record(observer.id))?.state).toBe('completed');
+  expect((await hub.record(observer.id))?.concurrentAgentFiles).toContain('manuscript/work-1/第二章.md');
+});

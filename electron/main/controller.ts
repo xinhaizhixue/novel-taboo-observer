@@ -10,10 +10,13 @@ import { relocateComment } from './observer.js';
 import { combineStoryRoutes } from './navigation.js';
 import { SettingsStore } from './settings.js';
 import { AuthorProfileStore } from './profile.js';
-import { exists, now, readJson, uid, writeJson } from './utils.js';
+import { exists, hashText, now, readJson, uid, writeJson } from './utils.js';
 import { watchProjectFiles } from './watch.js';
 import { analyzeCanonImpact } from './canon-impact.js';
 import { ProjectTrashStore } from './trash.js';
+import { automaticReviewTargets } from './literary-review.js';
+import type { AgentTaskRecord } from '../../src/shared/types.js';
+import { withDeadline } from './shutdown.js';
 
 type HandlerMap = {
   [K in keyof WorkbenchApi as WorkbenchApi[K] extends (...args: never[]) => Promise<unknown> ? K : never]?: WorkbenchApi[K]
@@ -29,6 +32,9 @@ export class WorkbenchController {
   readonly trash: ProjectTrashStore;
   private watcher?: FSWatcher;
   private watcherRevision = 0;
+  private closing = false;
+  private reviewQueue = Promise.resolve();
+  private reviewGeneration = 0;
   private readonly buffers = new Map<string, { dirty: boolean; hash: string; content?: string }>();
   private activeBufferPath = '';
   private observer = { active: false, count: 0, budget: 40, startedAt: undefined as string | undefined };
@@ -41,6 +47,7 @@ export class WorkbenchController {
     this.trash = new ProjectTrashStore(appData, this.project);
     this.hub = new AgentHub(appData, this.project, this.profile);
     this.context = new ContextAssembler(this.project);
+    this.hub.onWriterCompleted = (record) => this.enqueueWriterReview(record);
     this.runtimePath = path.join(appData, 'runtime.json');
     this.hub.subscribe((event) => {
       this.send('workbench:agent-event', event);
@@ -48,8 +55,42 @@ export class WorkbenchController {
     });
   }
 
+  private enqueueWriterReview(record: AgentTaskRecord) {
+    const root = this.project.activeRoot;
+    const generation = this.reviewGeneration;
+    this.reviewQueue = this.reviewQueue.then(async () => {
+      if (this.closing || generation !== this.reviewGeneration || this.project.activeRoot !== root) return;
+      const settings = await this.settings.get();
+      if (!settings.review.afterWriter) return;
+      const state = await this.project.state();
+      const completedWriters = state.agentTasks.filter((task) => task.role === 'writer' && task.state === 'completed').length;
+      const sequence = completedWriters % Math.max(1, settings.review.sequenceEvery) === 0;
+      const targets = automaticReviewTargets(state.files.filter((file) => file.category === 'manuscript').map((file) => file.path), record.changedFiles, sequence);
+      for (const target of targets) {
+        if (this.closing || generation !== this.reviewGeneration || this.project.activeRoot !== root) return;
+        await this.hub.waitForReviews();
+        if (this.closing || generation !== this.reviewGeneration || this.project.activeRoot !== root) return;
+        const file = await this.project.readFile(target.filePath);
+        const buffer = this.buffers.get(file.path);
+        const content = buffer?.dirty && buffer.content !== undefined ? buffer.content : file.content;
+        const task = await this.hub.runObserver({ model: record.adapterId === 'codex' ? settings.agents.codexReviewModel || undefined : undefined, reasoningEffort: settings.agents.reviewReasoning, adapterId: record.adapterId, mode: 'manual', reviewScope: target.scope, reviewWindow: settings.review.window, sourceWriterTaskId: record.id, snapshot: { id: uid('review-snapshot'), filePath: file.path, content, hash: hashText(content), editorVersion: 0, createdAt: now() } });
+        this.send('workbench:project-change');
+        await this.hub.waitForTask(task.id);
+      }
+
+    }).catch(async (error) => {
+      console.error('Automatic literary review failed:', error);
+      if (this.project.activeRoot === root && !this.closing) {
+        await this.project.eventStore.append('review.report', { id: uid('review-failed'), taskId: '', scope: 'chapter', status: 'failed', primaryFile: record.changedFiles[0] || '', createdAt: now(), completedAt: now(), summary: `Writer 已结束，但自动审阅没有完成：${String(error)}`, sources: [], omittedPaths: record.changedFiles, gaps: ['需要重新发起审阅。'], assessments: [], commentIds: [], unanchored: [], sourceWriterTaskId: record.id }, 'observer');
+        this.send('workbench:project-change');
+      }
+    });
+    void this.reviewQueue.catch((error) => console.error('Could not record review failure:', error));
+  }
+
   private send(channel: string, payload?: unknown) {
-    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send(channel, payload);
+    if (this.closing) return;
+    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, payload);
   }
 
   private async remember(root: string) {
@@ -158,8 +199,9 @@ export class WorkbenchController {
       listAgents: () => this.hub.list(),
       runAgent: async (input) => {
         if (input.role === 'writer' && !input.scope.length) throw new Error('Writer 任务必须明确文件或目录范围');
-        if (input.role === 'writer') await this.assertNoDirtyBuffers(input.scope);
-        return this.hub.runTask(input);
+        if (input.role === 'writer') { await this.assertNoDirtyBuffers(input.scope); await this.preserveWriterBaseline(input.scope); }
+        const settings = await this.settings.get();
+        return this.hub.runTask({ ...input, ...(input.adapterId === 'codex' && input.role === 'writer' ? { model: input.model || settings.agents.codexWriterModel || undefined, reasoningEffort: input.reasoningEffort || settings.agents.writerReasoning } : {}) });
       },
       runObserver: async (input) => {
         if (input.mode === 'automatic') {
@@ -167,11 +209,12 @@ export class WorkbenchController {
           if (this.observer.count >= this.observer.budget) throw new Error('Observer 自动分析已达到本会话软预算，请确认继续或切换手动模式');
           this.observer.count += 1;
         }
-        return this.hub.runObserver(input);
+        const settings = await this.settings.get();
+        return this.hub.runObserver({ ...input, model: input.model || (input.adapterId === 'codex' ? settings.agents.codexReviewModel || undefined : undefined), reasoningEffort: input.reasoningEffort || settings.agents.reviewReasoning });
       },
       cancelAgent: (id) => this.hub.cancel(id),
-      stopAllAgents: () => this.hub.cancelAll(),
-      sendAgentMessage: async (id, message) => { const record = await this.hub.record(id); if (record?.role === 'writer') await this.assertNoDirtyBuffers(record.scope); return this.hub.sendMessage(id, message); },
+      stopAllAgents: () => { ++this.reviewGeneration; return this.hub.cancelAll(); },
+      sendAgentMessage: async (id, message) => { const record = await this.hub.record(id); if (record?.role === 'writer') { await this.assertNoDirtyBuffers(record.scope); await this.preserveWriterBaseline(record.scope); } const settings = await this.settings.get(); return this.hub.sendMessage(id, message, record?.adapterId === 'codex' ? { model: (record.role === 'writer' ? settings.agents.codexWriterModel : settings.agents.codexReviewModel) || undefined, reasoningEffort: record.role === 'writer' ? settings.agents.writerReasoning : settings.agents.reviewReasoning } : undefined); },
       createContextPack: (input) => this.context.build(input),
       observerSession: async (action) => {
         const settings = await this.settings.get();
@@ -224,7 +267,18 @@ export class WorkbenchController {
         }
       }
     };
-    for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`workbench:${name}`, (_event, ...args) => (handler as (...values: unknown[]) => unknown)(...args));
+    for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`workbench:${name}`, (_event, ...args) => {
+      if (this.closing) throw new Error('正在保存并退出，请稍候。');
+      return (handler as (...values: unknown[]) => unknown)(...args);
+    });
+  }
+
+  private async preserveWriterBaseline(scope: string[]) {
+    for (const file of await this.project.files()) {
+      if (file.category !== 'manuscript' || !scope.some((item) => file.path === item || file.path.startsWith(`${item.replace(/\/$/, '')}/`))) continue;
+      const source = await this.project.readFile(file.path);
+      await this.recovery.create(this.project.activeManifest.projectId, file.path, source.content, 'before-writer');
+    }
   }
 
   private async assertNoDirtyBuffers(scope: string[]) {
@@ -237,12 +291,25 @@ export class WorkbenchController {
   }
 
   async prepareToClose() {
-    if (!this.project.isActive) return;
-    await this.hub.cancelAll();
-    for (const [file, buffer] of this.buffers) {
-      if (!buffer.dirty || buffer.content === undefined) continue;
-      await this.recovery.create(this.project.activeManifest.projectId, file, buffer.content, 'session-end', true);
+    this.closing = true;
+    ++this.reviewGeneration;
+    try {
+      // Protect author edits before waiting for external processes.
+      if (this.project.isActive) for (const [file, buffer] of this.buffers) {
+        if (!buffer.dirty || buffer.content === undefined) continue;
+        await withDeadline(this.recovery.create(this.project.activeManifest.projectId, file, buffer.content, 'session-end', true), 5_000, `“${file}”恢复副本保存超时，请保存正文后重试退出。`);
+      }
+    } catch (error) { this.closing = false; throw error; }
+    try {
+      await withDeadline(this.hub.cancelAll(), 8_000, 'Agent 停止超时');
+    } catch (error) {
+      this.hub.forceStopAll();
+      console.warn('Agent cleanup did not finish:', error);
     }
+    ++this.watcherRevision;
+    const watcher = this.watcher;
+    this.watcher = undefined;
+    if (watcher) await withDeadline(watcher.close(), 2_000, '文件监听关闭超时').catch((error) => console.warn(error));
   }
 
   private async commentFeedback(input: { commentId: string; action: 'accept' | 'reject' | 'defer' | 'review' | 'explain' | 'intentional' | 'forward'; reason?: string }) {

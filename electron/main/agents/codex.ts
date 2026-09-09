@@ -1,6 +1,7 @@
 import { constants as fsConstants } from 'node:fs';
 import { access, readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { signalAgent } from './terminate.js';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentAdapterInfo, AgentEvent, JsonValue } from '../../../src/shared/types.js';
@@ -24,18 +25,18 @@ function collectModelSlugs(value: unknown, result = new Set<string>()) {
 export class CodexAdapter implements AgentAdapter {
   readonly id = 'codex' as const;
   private command: string;
-  private lowLatencyModel = process.env.NOVEL_OBSERVER_CODEX_FAST_MODEL || '';
+  private models: string[] = [];
 
   constructor(command = process.env.NOVEL_OBSERVER_CODEX_PATH || 'codex', private readonly checkStateDirectory = true, private readonly stateDirectory = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')) {
     this.command = command;
   }
 
-  private async resolveLowLatencyModel(command: string) {
-    if (this.lowLatencyModel) return;
+  private async resolveModels(command: string) {
+    if (this.models.length) return;
     try {
       const { stdout } = await exec(command, ['debug', 'models', '--bundled'], undefined, 5_000);
       const available = collectModelSlugs(JSON.parse(stdout));
-      this.lowLatencyModel = ['gpt-5.6-luna', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'].find((model) => available.has(model)) || '';
+      this.models = [...available];
     } catch { /* Older Codex versions may not expose a bundled catalog; use their own default. */ }
   }
 
@@ -56,9 +57,9 @@ export class CodexAdapter implements AgentAdapter {
               };
             }
           }
-          await this.resolveLowLatencyModel(candidate);
+          await this.resolveModels(candidate);
           return {
-            id: 'codex', name: 'Codex CLI', command: candidate, available: true, version: stdout.trim(), authenticated: true,
+            id: 'codex', name: 'Codex CLI', command: candidate, available: true, models: this.models, version: stdout.trim(), authenticated: true,
             diagnostic: login.stdout.trim() || login.stderr.trim() || '登录状态正常', checkedAt: now(),
             capabilities: { persistentSession: true, resumeSession: true, appendMessage: false, cancel: true, structuredOutput: true, fileModification: true, interAgentMessaging: false, approvalEvents: false, usage: true }
           };
@@ -81,14 +82,14 @@ export class CodexAdapter implements AgentAdapter {
     const runtimeArgs = [
       '--disable', 'chronicle',
       ...(options.ignoreUserConfig ? ['--ignore-user-config'] : []),
-      ...(options.ignoreUserConfig && options.reasoningEffort === 'low' && this.lowLatencyModel ? ['--model', this.lowLatencyModel] : []),
+      ...(options.model ? ['--model', options.model] : []),
       ...(options.reasoningEffort ? ['-c', `model_reasoning_effort="${options.reasoningEffort}"`] : []),
       ...(options.networkAccess ? ['-c', 'sandbox_workspace_write.network_access=true'] : [])
     ];
     const args = options.sessionId
       ? ['exec', ...runtimeArgs, 'resume', options.sessionId, '--json', ...(options.schemaPath ? ['--output-schema', options.schemaPath] : []), '-o', options.outputPath, '-']
       : ['exec', ...runtimeArgs, '--json', '--color', 'never', '-s', options.readOnly ? 'read-only' : 'workspace-write', '-C', options.root, ...(options.schemaPath ? ['--output-schema', options.schemaPath] : []), '-o', options.outputPath, '-'];
-    const child = spawn(this.command, args, { cwd: options.root, env: options.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(this.command, args, { cwd: options.root, detached: process.platform !== 'win32', env: options.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin.end(options.prompt);
     let buffer = '';
     let sessionId = options.sessionId;
@@ -106,7 +107,7 @@ export class CodexAdapter implements AgentAdapter {
       forcedExitCode = exitCode;
       rememberRaw(message);
       options.emit({ taskId: options.taskId, type: 'error', at: now(), payload: message });
-      child.kill('SIGTERM');
+      signalAgent(child, 'SIGTERM');
     };
     const startupTimer = setTimeout(() => stopForStartupFailure(`Agent 启动超过 ${Math.round(startupTimeoutMs / 1000)} 秒仍没有模型输出，工作台已停止本次任务。`, 124), startupTimeoutMs);
     const markMeaningfulOutput = () => {

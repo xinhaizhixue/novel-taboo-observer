@@ -4,11 +4,15 @@ import fg from 'fast-glob';
 import { DATA_VERSION, MANIFEST_PATH, PROJECT_FOLDERS, SUPPORTED_TEXT_EXTENSIONS } from '../../src/shared/constants.js';
 import { compareNaturalPath } from '../../src/shared/natural-sort.js';
 import type { AgentTaskRecord, AuthorProfile, ContinueCard, CreativeTask, GitPolicy, Goal, NavigationProposal, NovelEvent, ObserverComment, ProjectFile, ProjectManifest, ProjectState, StoryFact } from '../../src/shared/types.js';
+import { relocateComment } from './observer.js';
+import { reviewIsStale } from './literary-review.js';
+import type { ReviewReport } from '../../src/shared/types.js';
 import { EventStore } from './events.js';
 import { GitService } from './git.js';
 import { atomicWrite, exists, fileInfo, hashText, now, readJson, safeRelative, uid, writeJson } from './utils.js';
 
 interface ReducedState {
+  reviews: ReviewReport[];
   goals: Goal[];
   tasks: CreativeTask[];
   comments: ObserverComment[];
@@ -37,9 +41,10 @@ function replaceById<T extends { id: string }>(items: T[], item: T) {
 }
 
 function reduceEvents(events: NovelEvent[]): ReducedState {
-  const state: ReducedState = { goals: [], tasks: [], comments: [], facts: [], proposals: [], agentTasks: [], fileOrigins: {} };
+  const state: ReducedState = { reviews: [], goals: [], tasks: [], comments: [], facts: [], proposals: [], agentTasks: [], fileOrigins: {} };
   for (const event of events) {
     const payload = event.payload as unknown as Record<string, unknown>;
+    if (event.type === 'review.report') replaceById(state.reviews, payload as unknown as ReviewReport);
     if (event.type === 'goal.upsert') replaceById(state.goals, payload as unknown as Goal);
     if (event.type === 'task.upsert') replaceById(state.tasks, payload as unknown as CreativeTask);
     if (event.type === 'fact.upsert') replaceById(state.facts, payload as unknown as StoryFact);
@@ -63,6 +68,7 @@ export class ProjectService {
   private git?: GitService;
   private openedDirty = new Set<string>();
   private authorRevision = 0;
+  private readonly agentEdits = new Map<string, { taskId: string; revision: number; hash: string }>();
   private readonly authorEdits = new Map<string, { revision: number; hash: string }>();
   constructor(private readonly sessionId: string) {}
 
@@ -76,6 +82,15 @@ export class ProjectService {
   isAuthorEditSince(file: string, hash: string, revision: number) {
     const edit = this.authorEdits.get(file);
     return Boolean(edit && edit.revision > revision && edit.hash === hash);
+  }
+
+  recordAgentEdits(taskId: string, hashes: Record<string, string>) {
+    for (const [file, hash] of Object.entries(hashes)) this.agentEdits.set(file, { taskId, hash, revision: ++this.authorRevision });
+  }
+
+  isOtherAgentEditSince(taskId: string, file: string, hash: string, revision: number) {
+    const edit = this.agentEdits.get(file);
+    return Boolean(edit && edit.taskId !== taskId && edit.revision > revision && edit.hash === hash);
   }
 
   private recordAuthorEdit(file: string, hash: string) {
@@ -266,6 +281,25 @@ export class ProjectService {
   async state(): Promise<ProjectState> {
     const [{ files, manuscriptContents }, events, git] = await Promise.all([this.textSnapshot(), this.eventStore.all(), this.gitService.status()]);
     const reduced = reduceEvents(events);
+    const manuscriptPaths = files.filter((file) => file.category === 'manuscript').map((file) => file.path);
+    const currentTexts = new Map(manuscriptPaths.map((file, index) => [file, manuscriptContents[index]]));
+    reduced.comments = reduced.comments.map((comment) => {
+      if (!comment.anchor.filePath.startsWith('manuscript/')) return comment;
+      const relocated = relocateComment(comment, currentTexts.get(comment.anchor.filePath) ?? '');
+      return { ...relocated, updatedAt: comment.updatedAt };
+    });
+    if (reduced.reviews.length) {
+      const manuscriptFiles = files.filter((file) => file.category === 'manuscript');
+      const hashes = Object.fromEntries(manuscriptFiles.map((file, index) => [file.path, hashText(manuscriptContents[index] ?? '')]));
+      const references = [...new Set(reduced.reviews.flatMap((report) => report.sources.map((source) => source.filePath)))].filter((file) => hashes[file] === undefined);
+      for (const file of references) { try { hashes[file] = (await this.readFile(file)).hash; } catch { /* Missing references make the report stale. */ } }
+      reduced.reviews = reduced.reviews.map((report) => {
+        if (!report.protocolVersion && ['clear', 'findings'].includes(report.status)) report = { ...report, status: 'incomplete', gaps: [...report.gaps, '早期报告没有逐章阅读证据，不能计入完整覆盖。'] };
+        const task = reduced.agentTasks.find((item) => item.id === report.taskId);
+        const ended = report.status === 'running' && task && ['failed', 'cancelled', 'interrupted'].includes(task.state);
+        return { ...report, ...(ended ? { status: task.state === 'cancelled' ? 'cancelled' as const : 'failed' as const, summary: task.error || '上次审阅中断，请重新检查。' } : {}), stale: reviewIsStale(report, hashes) };
+      });
+    }
     const goal = [...reduced.goals].filter((item) => item.status === 'active').sort((a, b) => ['author-pinned', 'active-task', 'confirmed-plan', 'agent-suggestion'].indexOf(a.authority) - ['author-pinned', 'active-task', 'confirmed-plan', 'agent-suggestion'].indexOf(b.authority))[0];
     const current = reduced.tasks.filter((item) => item.status === 'now');
     const next = [...current, ...reduced.tasks.filter((item) => item.status === 'next')].slice(0, 3);

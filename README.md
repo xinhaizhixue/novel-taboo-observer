@@ -1,4 +1,4 @@
-# 禁忌观察者（Novel Observer）
+# 叙舟 · 长篇写作工作台
 
 一个以 Git 仓库承载作品、以本地桌面工作台承载交互、桥接 Codex CLI / Claude Code 等通用 Agent 的长篇网文 AI 写作系统。
 
@@ -24,6 +24,10 @@
 - 独立、可导入导出的作者风格档案，以及仓库内带状态的规则、候选与证据快照；只有已确认规则生效，所有规则都支持证据查看、编辑和删除。
 - 新建作品可设置计划篇幅，继续创作页与状态栏显示全书字数、章节数和完成率。
 - 内置新手引导、使用帮助页和完整[作者使用指南](docs/USER_GUIDE.md)。
+
+## 下载桌面版
+
+在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.0 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
 
 ## 开发运行
 
@@ -101,3 +105,15 @@ series-repo/
 作者从 [完整使用指南](docs/USER_GUIDE.md) 开始。详细设计见 [产品需求基线](docs/PRODUCT_REQUIREMENTS_V0.2.md)、[架构](docs/ARCHITECTURE.md)、[迁移与恢复](docs/PORTABILITY.md)、[UI 设计与验收规范](docs/UI_DESIGN_SYSTEM.md) 和 [路线图](docs/ROADMAP.md)。最近一次真实作者流程回归及测试限制见 [2026-09-07 验证记录](docs/VALIDATION-2026-09-07.md)。
 
 平台验收夹具与作者实际作品的目标分别管理。验收样书的停止条件不能覆盖作者明确授权的整书写作任务：如果作者要求完成整部作品，应以该作品的正文、结构和篇幅目标验收，不能用平台测试通过代替作品完成。
+
+## 应用标识与退出
+
+窗口、菜单、Dock 和安装包统一使用「叙舟」。图标源文件为 `assets/icon.svg`，网页图标为 `public/icon.svg`，桌面图标提供 PNG、ICNS 和 ICO。应用 ID 保持不变；开发模式沿用 `novel-observer` 数据目录，已有打包版沿用 `禁忌观察者` 数据目录；首次使用打包版则复用开发版数据目录。
+
+关闭主窗口或 Command-Q 都退出应用：先为未保存正文保存恢复副本，再停止 Agent 与文件监听。Agent 不响应正常停止时会终止其进程组。恢复副本保存失败会保留窗口，显示错误并允许保存后重试。
+
+## 文学审阅
+
+从侧栏「文学审阅」按当前章节精读，或联合审读最近3—5章。报告列出逐章证据、六项检查、无法定位的意见和旧版状态；Writer完成后默认自动检查实际改动文件，并核对写作要求是否达成。多章改写可显式勾选范围，改写前自动保留恢复点。详见 [文学审阅与验收](docs/LITERARY_REVIEW.md)。
+
+项目设置可为Codex Writer和文学审阅分别指定模型与推理强度，参数写入每次任务记录；不修改全局CLI设置，也不暗中选择轻量模型。

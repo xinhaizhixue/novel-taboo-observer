@@ -736,3 +736,47 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .repository-danger { align-items: stretch; flex-direction: column; }
   .web-preview-banner { top: auto; bottom: 36px; }
 }
+
+.brand-mark, .brand-large { border: 0; background: none; }
+.brand-mark img, .brand-large img { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+.literary-review-page { max-width: 1100px; margin: 0 auto; padding-bottom: 80px; }
+.literary-review-page header p { max-width: 800px; line-height: 1.8; }
+.literary-review-page section { padding: 24px; margin: 20px 0; border: 1px solid var(--border, #b7afa0); border-radius: 14px; }
+.review-compose { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; }
+.review-compose label { display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.review-compose select { padding: 9px; background: var(--bg-panel, #e8e2d6); color: #28251f; border: 1px solid #9b9282; border-radius: 6px; max-width: 290px; }
+.review-compose .review-auto { flex-direction: row; align-items: center; width: 100%; }
+.review-hint, .review-coverage span { font-size: 14px; line-height: 1.7; margin: 0; }
+.review-coverage { display: flex; flex-direction: column; gap: 6px; padding: 18px 24px; background: rgba(161, 105, 61, .1); border-radius: 10px; }
+.review-report-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.review-report-heading strong { font-size: 14px; }
+.review-report p { white-space: pre-wrap; line-height: 1.8; }
+.review-report small { opacity: .8; }
+.review-source-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.review-source-list button, .review-report > button, .review-findings button, .review-active-task button { padding: 7px 11px; border: 1px solid #9b9282; border-radius: 6px; background: transparent; color: inherit; }
+.review-gaps { padding: 14px; margin-top: 14px; background: rgba(180, 112, 35, .12); border-left: 3px solid #a56e27; }
+.review-assessments { margin: 20px 0; }
+.review-assessments details { border-top: 1px solid #b7afa0; padding: 12px 0; }
+.review-assessments summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; }
+.review-assessments summary span { font-size: 13px; }
+.review-report blockquote { margin: 12px 0; padding: 10px 16px; border-left: 3px solid #8d785f; white-space: pre-wrap; line-height: 1.8; }
+.review-report blockquote button { display: block; color: inherit; background: transparent; text-decoration: underline; margin-bottom: 6px; }
+.review-findings article { padding: 14px 0; border-top: 1px solid #b7afa0; }
+.review-findings article > button + button { margin-left: 8px; }
+.review-active-task { display: flex; width: 100%; gap: 12px; justify-content: space-between; align-items: center; }
+.writer-chapter-scope { margin: 12px 0; padding: 10px; border: 1px solid #9b9282; border-radius: 8px; font-size: 13px; }
+.writer-chapter-scope summary { cursor: pointer; }
+.writer-chapter-scope label { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.writer-chapter-scope p { line-height: 1.6; }
+
+.review-compose > button { min-height: 38px; padding: 9px 16px; border: 1px solid; border-radius: 7px; font-weight: 600; }
+.review-report { display: block; }
+.agent-model-settings label { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 14px 0; }
+.agent-model-settings input, .agent-model-settings select { width: 260px; padding: 9px; background: #f9f6ee; border: 1px solid #a69a86; border-radius: 6px; color: #28251f; }
+.agent-model-settings button { padding: 9px 12px; margin: 8px 10px 8px 0; border: 1px solid #a69a86; border-radius: 6px; background: transparent; color: inherit; }
+.agent-model-settings p { font-size: 14px; line-height: 1.7; }
+.agent-model-choice { display: block; margin: 6px 12px 10px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.app.is-right-closed:not(.is-git):not(.is-focus) { grid-template-columns: 76px 258px minmax(0, 1fr); }
+@media (max-width: 1220px) { .app.is-right-closed:not(.is-git):not(.is-focus) { grid-template-columns: 58px 224px minmax(0, 1fr); } }
+.writer-chapter-scope > button { width: 100%; text-align: left; padding: 5px 0; background: transparent; color: inherit; }

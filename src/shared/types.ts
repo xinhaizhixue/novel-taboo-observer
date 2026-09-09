@@ -249,6 +249,7 @@ export interface AgentCapabilities {
 }
 
 export interface AgentAdapterInfo {
+  models?: string[];
   id: 'codex' | 'claude';
   name: string;
   command: string;
@@ -269,6 +270,8 @@ export interface AgentVerifiedTextFile {
   hash: string;
 }
 export interface AgentTaskRecord {
+  model?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
   id: string;
   adapterId: AgentAdapterInfo['id'];
   role: AgentRole;
@@ -285,6 +288,7 @@ export interface AgentTaskRecord {
   changedFiles: string[];
   /** Concurrent edits verified against in-process workbench save/move receipts. */
   concurrentAuthorFiles?: string[];
+  concurrentAgentFiles?: string[];
   /** Workbench-computed facts. Never trust an Agent's prose summary for these values. */
   verifiedTextFiles?: AgentVerifiedTextFile[];
   finalMessage?: string;
@@ -299,6 +303,7 @@ export interface AgentEvent {
 }
 
 export interface AnalysisSnapshot {
+  referenceOnly?: boolean;
   id: string;
   filePath: string;
   content: string;
@@ -312,6 +317,7 @@ export interface ContextItem { id: string; kind: string; title: string; source: 
 export interface ContextPack { id: string; task: string; createdAt: string; budget: number; characters: number; items: ContextItem[]; gaps: string[] }
 
 export interface ProjectState {
+  reviews?: ReviewReport[];
   root: string;
   manifest: ProjectManifest;
   files: ProjectFile[];
@@ -332,6 +338,8 @@ export interface FileWriteRequest { path: string; content: string; expectedHash?
 export interface FileWriteResult extends FileReadResult { conflict?: { diskContent: string; expectedHash: string; actualHash: string } }
 
 export interface AgentRunRequest {
+  model?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
   adapterId: AgentAdapterInfo['id'];
   role: AgentRole;
   objective: string;
@@ -343,6 +351,15 @@ export interface AgentRunRequest {
 }
 
 export interface ObserverRunRequest {
+  model?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  writingRequirements?: string;
+  writingComparison?: string;
+  reviewScope?: ReviewScope;
+  reviewWindow?: number;
+  bundle?: ReviewBundle;
+  reportId?: string;
+  sourceWriterTaskId?: string;
   adapterId: AgentAdapterInfo['id'];
   snapshot: AnalysisSnapshot;
   contextPack?: ContextPack;
@@ -408,4 +425,45 @@ export interface WorkbenchApi {
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
   onExternalFileChange(listener: (change: { path: string; hash: string; content: string }) => void): () => void;
   onProjectChange(listener: () => void): () => void;
+}
+
+export type ReviewDimension = 'continuity' | 'dialogue' | 'naturalness' | 'agency' | 'pacing' | 'world';
+export type ReviewScope = 'chapter' | 'sequence';
+export interface ReviewEvidence { filePath: string; quote: string }
+export interface ReviewAssessment {
+  dimension: ReviewDimension;
+  status: 'issues' | 'clear' | 'insufficient';
+  finding: string;
+  evidence: ReviewEvidence[];
+}
+export interface ReviewBundle {
+  scope: ReviewScope;
+  sources: AnalysisSnapshot[];
+  requestedPaths: string[];
+  omittedPaths: string[];
+  characters: number;
+  budget: number;
+  gaps: string[];
+}
+export interface ReviewReport {
+  writingRequirements?: string;
+  taskAlignment?: { status: 'met' | 'unmet' | 'insufficient' | 'not-applicable'; finding: string; evidence: ReviewEvidence[] };
+  protocolVersion?: number;
+  chapterReadings?: Array<{ filePath: string; change: string; evidence: ReviewEvidence[] }>;
+  id: string;
+  taskId: string;
+  scope: ReviewScope;
+  status: 'running' | 'findings' | 'clear' | 'incomplete' | 'failed' | 'cancelled';
+  primaryFile: string;
+  createdAt: string;
+  completedAt?: string;
+  summary: string;
+  sources: Array<{ filePath: string; hash: string; referenceOnly?: boolean }>;
+  omittedPaths: string[];
+  gaps: string[];
+  assessments: ReviewAssessment[];
+  commentIds: string[];
+  unanchored: Array<{ filePath: string; quote: string; summary: string; reason: string }>;
+  stale?: boolean;
+  sourceWriterTaskId?: string;
 }
