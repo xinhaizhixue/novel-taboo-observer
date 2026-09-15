@@ -42,6 +42,7 @@ function finish(prompt) {
     process.stdout.write(JSON.stringify({ type: 'result', session_id: 'cold-session', result }) + String.fromCharCode(10));
     return;
   }
+  if (prompt.includes('FAKE_THINKING')) { process.stdout.write(JSON.stringify({type:'system',subtype:'thinking_tokens'})+String.fromCharCode(10));setTimeout(()=>process.stdout.write(JSON.stringify({type:'result',result:'finished'})+String.fromCharCode(10)),1500);return; }
   if (prompt.includes('FAKE_STRUCTURED_OUTPUT')) { process.stdout.write(JSON.stringify({type:'result',result:'',structured_output:{checked:true}})+String.fromCharCode(10));return; }
   if (prompt.includes('FAKE_RESULT_ERROR')) { process.stdout.write(JSON.stringify({type:'result',is_error:true,result:'model failed'})+String.fromCharCode(10));return; }
   if (prompt.includes('FAKE_NEWER_CLI_REQUIRED')) { process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'The configured model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.' } }) + '\\n'); process.exit(1); }
@@ -333,4 +334,10 @@ it('Claude structured_output 正确交付，result.is_error 不冒充成功', as
  const invoke=(prompt:string)=>adapter.run({taskId:'structured',root,prompt,readOnly:true,pureText:true,outputPath:path.join(root,'out'),emit:()=>{}}).completed;
  expect(await invoke('FAKE_STRUCTURED_OUTPUT')).toMatchObject({finalMessage:'{"checked":true}',exitCode:0});
  expect(await invoke('FAKE_RESULT_ERROR')).toMatchObject({exitCode:1});
+});
+
+it('Claude 已返回推理进度时不再误报启动超时，推理强度传入CLI', async()=>{
+ const {command,logPath}=await fakeCli('claude');const root=await mkdtemp(path.join(os.tmpdir(),'claude-thinking-'));roots.push(root);
+ const result=await new ClaudeAdapter(command,false).run({taskId:'thinking',root,prompt:'FAKE_THINKING',reasoningEffort:'high',startupTimeoutMs:1000,readOnly:true,outputPath:path.join(root,'out'),emit:()=>{}}).completed;
+ expect(result.exitCode).toBe(0);expect(result.finalMessage).toBe('finished');expect((await calls(logPath)).some(c=>c.args.includes('--effort')&&c.args.includes('high'))).toBe(true);
 });

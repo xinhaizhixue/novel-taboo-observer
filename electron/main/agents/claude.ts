@@ -54,6 +54,7 @@ export class ClaudeAdapter implements AgentAdapter {
       ...(options.schemaPath ? ['--json-schema', readFileSync(options.schemaPath, 'utf8')] : []),
       '--output-format', 'stream-json', '--verbose',
       '--permission-mode', options.readOnly ? 'default' : 'acceptEdits',
+      ...(options.reasoningEffort ? ['--effort', options.reasoningEffort] : []),
       ...(options.model ? ['--model', options.model] : []),
       ...(options.sessionId ? ['--resume', options.sessionId] : [])
     ];
@@ -67,13 +68,16 @@ export class ClaudeAdapter implements AgentAdapter {
     let forcedExitCode: number | undefined;
     const startupTimeoutMs = options.startupTimeoutMs ?? 300_000;
     const rememberRaw = (line: string) => { raw.push(line); options.recordRaw?.(line); };
+    let terminationTimer: ReturnType<typeof setTimeout> | undefined;
     const startupTimer = setTimeout(() => {
       if (meaningfulOutput || child.exitCode !== null) return;
       forcedExitCode = 124;
-      const message = `Agent 启动超过 ${Math.round(startupTimeoutMs / 1000)} 秒仍没有模型输出，工作台已停止本次任务。`;
+      const message = `Agent 启动超过 ${Math.round(startupTimeoutMs / 1000)} 秒仍没有模型输出，工作台正在停止本次任务。`;
       rememberRaw(message);
       options.emit({ taskId: options.taskId, type: 'error', at: now(), payload: message });
       signalAgent(child, 'SIGTERM');
+      terminationTimer = setTimeout(() => { if (child.exitCode === null) signalAgent(child, 'SIGKILL'); }, 3_000);
+      terminationTimer.unref();
     }, startupTimeoutMs);
     const publish = (line: string) => {
       if (!line.trim()) return;
@@ -107,9 +111,9 @@ export class ClaudeAdapter implements AgentAdapter {
       options.emit({ taskId: options.taskId, type: 'raw', at: now(), payload: message });
     });
     const completed = new Promise<{ sessionId?: string; finalMessage: string; exitCode: number; raw: string[] }>((resolve, reject) => {
-      child.on('error', (error) => { clearTimeout(startupTimer); reject(error); });
+      child.on('error', (error) => { clearTimeout(startupTimer); clearTimeout(terminationTimer); reject(error); });
       child.on('close', async (code, signal) => {
-        clearTimeout(startupTimer);
+        clearTimeout(startupTimer); clearTimeout(terminationTimer);
         if (buffer) publish(buffer);
         try { if (!finalMessage) finalMessage = await readFile(options.outputPath, 'utf8'); } catch { /* optional */ }
         resolve({ sessionId, finalMessage, exitCode: forcedExitCode ?? (signal === 'SIGTERM' ? 143 : code ?? 1), raw });
