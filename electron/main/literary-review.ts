@@ -39,12 +39,21 @@ export async function buildReviewBundle(project: ProjectService, input: Observer
 
 export function pendingReview(input: ObserverRunRequest, taskId: string): ReviewReport {
   const bundle = input.bundle!;
-  return { protocolVersion: 2, chapterReadings: [], id: input.reportId!, taskId, scope: bundle.scope, status: 'running', primaryFile: input.snapshot.filePath, createdAt: input.snapshot.createdAt, summary: '正在逐项审阅；尚无结论。', sources: bundle.sources.map(({ filePath, hash, referenceOnly }) => ({ filePath, hash, referenceOnly })), omittedPaths: bundle.omittedPaths, gaps: [...bundle.gaps], assessments: [], commentIds: [], unanchored: [], sourceWriterTaskId: input.sourceWriterTaskId, writingRequirements: input.writingRequirements };
+  return { protocolVersion: 3, coldReading: input.coldReading, chapterReadings: [], id: input.reportId!, taskId, scope: bundle.scope, status: 'running', primaryFile: input.snapshot.filePath, createdAt: input.snapshot.createdAt, summary: '正在逐项审阅；尚无结论。', sources: bundle.sources.map(({ filePath, hash, referenceOnly }) => ({ filePath, hash, referenceOnly })), omittedPaths: bundle.omittedPaths, gaps: [...bundle.gaps], assessments: [], commentIds: [], unanchored: [], sourceWriterTaskId: input.sourceWriterTaskId, writingRequirements: input.writingRequirements };
 }
 
 /** Treat the model's coverage claims as untrusted: validate every quoted source. */
 export function finishReview(report: ReviewReport, bundle: ReviewBundle, parsed: Record<string, unknown>, commentIds: string[], unanchored: ReviewReport['unanchored']): ReviewReport {
   const gaps = [...report.gaps];
+  if (report.protocolVersion === 3 && !report.coldReading) gaps.push('缺少独立正文阅读记录。');
+  const resolutions = Array.isArray(parsed.coldResolutions) ? parsed.coldResolutions as Array<Record<string, unknown>> : [];
+  const comments = Array.isArray(parsed.comments) ? parsed.comments as Array<Record<string, unknown>> : [];
+  for (const reading of report.coldReading?.readings ?? []) for (const friction of reading.frictions) {
+    const rows = resolutions.filter(row => row.filePath === reading.filePath && row.quote === friction.quote);
+    const row = rows[0];
+    if (rows.length !== 1 || !String(row.reason ?? '').trim() || !['retain', 'dismiss'].includes(String(row.decision)) || (row.decision === 'retain' && !comments.some(comment => comment.filePath === reading.filePath && String(comment.quote ?? '').includes(friction.quote)))) gaps.push(`${reading.filePath}的首次阅读疑点尚未逐条处理：${friction.quote}`);
+  }
+
   const readings = Array.isArray(parsed.chapterReadings) ? parsed.chapterReadings as Array<Record<string, unknown>> : [];
   const chapterReadings: NonNullable<ReviewReport['chapterReadings']> = [];
   for (const source of bundle.sources.filter((source) => !source.referenceOnly)) {
@@ -76,7 +85,7 @@ export function finishReview(report: ReviewReport, bundle: ReviewBundle, parsed:
   if (!alignmentValid || taskAlignment.status === 'insufficient') gaps.push('本次 Writer 的写作要求尚未完整核对。');
   const issues = taskAlignment.status === 'unmet' || commentIds.length > 0 || assessments.some((row) => row.status === 'issues');
   if (assessments.some((row) => row.status === 'issues') && !commentIds.length) gaps.push('报告指出问题但没有生成可处理的锚定意见。');
-  return { ...report, status: gaps.length || assessments.some((row) => row.status === 'insufficient') ? 'incomplete' : issues ? 'findings' : 'clear', completedAt: now(), summary: String(parsed.summary ?? '未提供整体判断。'), gaps: [...new Set(gaps)], chapterReadings, taskAlignment, assessments, commentIds, unanchored };
+  return { ...report, coldResolutions: resolutions.map(row => ({ filePath: String(row.filePath), quote: String(row.quote), decision: String(row.decision), reason: String(row.reason) })), status: gaps.length || assessments.some((row) => row.status === 'insufficient') ? 'incomplete' : issues ? 'findings' : 'clear', completedAt: now(), summary: String(parsed.summary ?? '未提供整体判断。'), gaps: [...new Set(gaps)], chapterReadings, taskAlignment, assessments, commentIds, unanchored };
 }
 
 export function reviewIsStale(report: ReviewReport, hashes: Record<string, string>) {
@@ -131,7 +140,7 @@ export async function addReviewReferences(project: ProjectService, bundle: Revie
 }
 
 export function writerReviewOutcome(writerId: string, changedFiles: string[], reports: ReviewReport[]) {
-  const checked = new Set(reports.filter((report) => report.sourceWriterTaskId === writerId && !report.stale && report.status === 'clear' && report.taskAlignment?.status === 'met').flatMap((report) => report.sources.filter((source) => !source.referenceOnly).map((source) => source.filePath)));
+  const checked = new Set(reports.filter((report) => report.sourceWriterTaskId === writerId && report.protocolVersion === 3 && Boolean(report.coldReading) && !report.stale && report.status === 'clear' && report.taskAlignment?.status === 'met').flatMap((report) => report.sources.filter((source) => !source.referenceOnly).map((source) => source.filePath)));
   const missing = changedFiles.filter((file) => !checked.has(file));
   return { complete: changedFiles.length > 0 && missing.length === 0, missing };
 }

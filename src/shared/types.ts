@@ -250,7 +250,7 @@ export interface AgentCapabilities {
 
 export interface AgentAdapterInfo {
   models?: string[];
-  id: 'codex' | 'claude';
+  id: 'codex' | 'claude' | 'traex';
   name: string;
   command: string;
   available: boolean;
@@ -350,7 +350,10 @@ export interface AgentRunRequest {
   allowNetwork?: boolean;
 }
 
+export interface ColdReading { readings: Array<{ filePath: string; quote: string; understanding: string; dialogueChecks?: Array<{quote: string; intendedAction: string; basis: string; priorEvidence: string}>; frictions: Array<{ quote: string; difficulty: string; suggestion: string }> }> }
+
 export interface ObserverRunRequest {
+  coldReading?: ColdReading;
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
   writingRequirements?: string;
@@ -446,6 +449,8 @@ export interface ReviewBundle {
   gaps: string[];
 }
 export interface ReviewReport {
+  coldResolutions?: Array<{ filePath: string; quote: string; decision: string; reason: string }>;
+  coldReading?: ColdReading;
   writingRequirements?: string;
   taskAlignment?: { status: 'met' | 'unmet' | 'insufficient' | 'not-applicable'; finding: string; evidence: ReviewEvidence[] };
   protocolVersion?: number;

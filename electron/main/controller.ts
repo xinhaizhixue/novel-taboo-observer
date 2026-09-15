@@ -73,7 +73,7 @@ export class WorkbenchController {
         const file = await this.project.readFile(target.filePath);
         const buffer = this.buffers.get(file.path);
         const content = buffer?.dirty && buffer.content !== undefined ? buffer.content : file.content;
-        const task = await this.hub.runObserver({ model: record.adapterId === 'codex' ? settings.agents.codexReviewModel || undefined : undefined, reasoningEffort: settings.agents.reviewReasoning, adapterId: record.adapterId, mode: 'manual', reviewScope: target.scope, reviewWindow: settings.review.window, sourceWriterTaskId: record.id, snapshot: { id: uid('review-snapshot'), filePath: file.path, content, hash: hashText(content), editorVersion: 0, createdAt: now() } });
+        const task = await this.hub.runObserver({ model: settings.observer.adapter === 'codex' ? settings.agents.codexReviewModel || undefined : undefined, reasoningEffort: settings.agents.reviewReasoning, adapterId: settings.observer.adapter, mode: 'manual', reviewScope: target.scope, reviewWindow: settings.review.window, sourceWriterTaskId: record.id, snapshot: { id: uid('review-snapshot'), filePath: file.path, content, hash: hashText(content), editorVersion: 0, createdAt: now() } });
         this.send('workbench:project-change');
         await this.hub.waitForTask(task.id);
       }

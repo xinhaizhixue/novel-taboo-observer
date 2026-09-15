@@ -2,6 +2,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { AgentAdapterInfo, AgentEvent } from '../../../src/shared/types.js';
 
 export interface AdapterRunOptions {
+  pureText?: boolean;
   model?: string;
   taskId: string;
   root: string;

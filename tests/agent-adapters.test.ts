@@ -32,8 +32,18 @@ function log(prompt = '') { fs.appendFileSync(logPath, JSON.stringify({ args, pr
 if (args[0] === '--version') { log(); process.stdout.write(${JSON.stringify(kind === 'codex' ? 'codex-cli fake-1.0\n' : 'claude fake-1.0\n')}); process.exit(0); }
 ${kind === 'codex' ? `if (args[0] === 'login' && args[1] === 'status') { log(); process.stdout.write('Logged in\\n'); process.exit(0); }` : ''}
 ${kind === 'codex' ? `if (args[0] === 'debug' && args[1] === 'models' && args[2] === '--bundled') { log(); process.stdout.write(JSON.stringify({ models: [{ slug: 'gpt-5.6-luna' }, { slug: 'gpt-5.5' }] })); process.exit(0); }` : ''}
+${kind === 'claude' ? `if (args[0] === 'auth') { log(); process.stdout.write(JSON.stringify({loggedIn:false})); process.exit(0); }` : ''}
 function finish(prompt) {
   log(prompt);
+  if (prompt.includes('你是第一次阅读这篇小说')) {
+    const matches = [...prompt.matchAll(/### ([^\\n]+)\\n([\\s\\S]*?)(?=\\n\\n### |$)/g)];
+    const result = JSON.stringify({ readings: matches.map(m => ({ filePath: m[1], quote: m[2].trim(), understanding: '已逐段阅读。', frictions: [] })) });
+    const out = args.indexOf('-o'); if (out >= 0) fs.writeFileSync(args[out + 1], result);
+    process.stdout.write(JSON.stringify({ type: 'result', session_id: 'cold-session', result }) + String.fromCharCode(10));
+    return;
+  }
+  if (prompt.includes('FAKE_STRUCTURED_OUTPUT')) { process.stdout.write(JSON.stringify({type:'result',result:'',structured_output:{checked:true}})+String.fromCharCode(10));return; }
+  if (prompt.includes('FAKE_RESULT_ERROR')) { process.stdout.write(JSON.stringify({type:'result',is_error:true,result:'model failed'})+String.fromCharCode(10));return; }
   if (prompt.includes('FAKE_NEWER_CLI_REQUIRED')) { process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'The configured model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.' } }) + '\\n'); process.exit(1); }
   if (prompt.includes('FAKE_FAIL')) { process.stderr.write('authentication expired\\n'); process.exit(5); }
   if (prompt.includes('FAKE_MODEL_REFRESH_STALL')) { process.stderr.write('ERROR failed to refresh available models: timeout waiting for child process to exit\\n'); setInterval(() => {}, 1000); return; }
@@ -315,4 +325,12 @@ it('显式任务模型作为独立CLI参数传入，不改全局配置也不被�
   const call = (await calls(logPath)).find((item) => item.prompt === 'TASK_MODEL_SELECTION')!;
   expect(call.args.slice(call.args.indexOf('--model'), call.args.indexOf('--model') + 2)).toEqual(['--model', 'gpt-6-astra']);
   expect(call.args.join(' ')).toContain('model_reasoning_effort="high"');
+});
+
+it('Claude structured_output 正确交付，result.is_error 不冒充成功', async () => {
+ const {command}=await fakeCli('claude');const root=await mkdtemp(path.join(os.tmpdir(),'claude-structured-'));roots.push(root);
+ const adapter=new ClaudeAdapter(command,false);
+ const invoke=(prompt:string)=>adapter.run({taskId:'structured',root,prompt,readOnly:true,pureText:true,outputPath:path.join(root,'out'),emit:()=>{}}).completed;
+ expect(await invoke('FAKE_STRUCTURED_OUTPUT')).toMatchObject({finalMessage:'{"checked":true}',exitCode:0});
+ expect(await invoke('FAKE_RESULT_ERROR')).toMatchObject({exitCode:1});
 });

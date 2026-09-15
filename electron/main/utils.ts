@@ -47,9 +47,9 @@ export async function fileInfo(target: string) {
   return { content, hash: hashText(content), modifiedAt: info.mtime.toISOString(), size: info.size };
 }
 
-export function exec(command: string, args: string[], cwd?: string, timeout = 30_000) {
+export function exec(command: string, args: string[], cwd?: string, timeout = 30_000, env?: NodeJS.ProcessEnv) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(command, args, { cwd, timeout, maxBuffer: 20 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(command, args, { cwd, timeout, env, maxBuffer: 20 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         const wrapped = new Error(String(stderr || stdout || error.message).trim());
         Object.assign(wrapped, { cause: error, code: (error as NodeJS.ErrnoException).code, stdout: String(stdout), stderr: String(stderr) });

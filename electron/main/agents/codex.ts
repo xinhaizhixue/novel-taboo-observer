@@ -1,6 +1,7 @@
 import { constants as fsConstants } from 'node:fs';
 import { access, readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { cliCandidates, cliEnvironment } from './discovery.js';
 import { signalAgent } from './terminate.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,11 +24,13 @@ function collectModelSlugs(value: unknown, result = new Set<string>()) {
 }
 
 export class CodexAdapter implements AgentAdapter {
-  readonly id = 'codex' as const;
+  readonly id: 'codex' | 'traex';
+  private get displayName() { return this.id === 'traex' ? 'TraeX CLI' : 'Codex CLI'; }
   private command: string;
   private models: string[] = [];
 
-  constructor(command = process.env.NOVEL_OBSERVER_CODEX_PATH || 'codex', private readonly checkStateDirectory = true, private readonly stateDirectory = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')) {
+  constructor(command = process.env.NOVEL_OBSERVER_CODEX_PATH || 'codex', private readonly checkStateDirectory = true, private readonly stateDirectory = process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), id: 'codex' | 'traex' = 'codex') {
+    this.id = id;
     this.command = command;
   }
 
@@ -41,46 +44,47 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async info(): Promise<AgentAdapterInfo> {
-    for (const candidate of [...new Set([this.command, '/Applications/Codex.app/Contents/Resources/codex', '/usr/local/bin/codex', '/opt/homebrew/bin/codex'])]) {
+    for (const candidate of [...new Set([this.command, ...(this.id === 'codex' ? ['/Applications/Codex.app/Contents/Resources/codex'] : []), ...await cliCandidates(this.command, this.id)])]) {
       try {
-        const { stdout } = await exec(candidate, ['--version']);
+        const { stdout } = await exec(candidate, ['--version'], undefined, 5_000, cliEnvironment(candidate));
         this.command = candidate;
         try {
-          const login = await exec(candidate, ['login', 'status']);
+          const login = await exec(candidate, ['login', 'status'], undefined, 8_000, cliEnvironment(candidate));
           if (this.checkStateDirectory) {
             try { await access(this.stateDirectory, fsConstants.W_OK); } catch {
               return {
-                id: 'codex', name: 'Codex CLI', command: candidate, available: false, version: stdout.trim(), authenticated: true, checkedAt: now(),
+                id: this.id, name: this.displayName, command: candidate, available: false, version: stdout.trim(), authenticated: true, checkedAt: now(),
                 reason: `Codex CLI 已登录，但运行状态目录不可写（${this.stateDirectory}）。请从有正常用户目录权限的桌面环境启动；工作台不会把任务标成可运行。`,
                 diagnostic: '登录有效；运行前置检查失败：状态目录只读',
                 capabilities: { persistentSession: true, resumeSession: true, appendMessage: false, cancel: true, structuredOutput: true, fileModification: true, interAgentMessaging: false, approvalEvents: false, usage: true }
               };
             }
           }
-          await this.resolveModels(candidate);
+          if (this.id === 'codex') await this.resolveModels(candidate);
           return {
-            id: 'codex', name: 'Codex CLI', command: candidate, available: true, models: this.models, version: stdout.trim(), authenticated: true,
+            id: this.id, name: this.displayName, command: candidate, available: true, models: this.models, version: stdout.trim(), authenticated: true,
             diagnostic: login.stdout.trim() || login.stderr.trim() || '登录状态正常', checkedAt: now(),
             capabilities: { persistentSession: true, resumeSession: true, appendMessage: false, cancel: true, structuredOutput: true, fileModification: true, interAgentMessaging: false, approvalEvents: false, usage: true }
           };
         } catch {
           return {
-            id: 'codex', name: 'Codex CLI', command: candidate, available: false, version: stdout.trim(), authenticated: false, checkedAt: now(),
-            reason: '已找到 Codex CLI，但尚未登录。请先在终端执行 codex login；工作台不会保存凭据。',
+            id: this.id, name: this.displayName, command: candidate, available: false, version: stdout.trim(), authenticated: false, checkedAt: now(),
+            reason: `已找到 ${this.displayName}，但认证检测失败。请在终端执行 ${this.id} login status 查看状态。`,
             capabilities: { persistentSession: true, resumeSession: true, appendMessage: false, cancel: true, structuredOutput: true, fileModification: true, interAgentMessaging: false, approvalEvents: false, usage: true }
           };
         }
       } catch { /* Try known macOS and package-manager locations. */ }
     }
     return {
-      id: 'codex', name: 'Codex CLI', command: this.command, available: false, reason: '未找到 Codex CLI。安装并登录后即可使用；工作台不保存登录凭据。',
+      id: this.id, name: this.displayName, command: this.command, available: false, reason: `未找到可运行的 ${this.displayName}。请检查安装路径及 Node 运行环境。`,
       capabilities: { persistentSession: false, resumeSession: false, appendMessage: false, cancel: false, structuredOutput: false, fileModification: false, interAgentMessaging: false, approvalEvents: false, usage: false }
     };
   }
 
   run(options: AdapterRunOptions): AdapterRunResult {
     const runtimeArgs = [
-      '--disable', 'chronicle',
+      ...(this.id === 'codex' ? ['--disable', 'chronicle'] : []),
+      ...(options.pureText ? ['--skip-git-repo-check'] : []),
       ...(options.ignoreUserConfig ? ['--ignore-user-config'] : []),
       ...(options.model ? ['--model', options.model] : []),
       ...(options.reasoningEffort ? ['-c', `model_reasoning_effort="${options.reasoningEffort}"`] : []),
@@ -89,7 +93,7 @@ export class CodexAdapter implements AgentAdapter {
     const args = options.sessionId
       ? ['exec', ...runtimeArgs, 'resume', options.sessionId, '--json', ...(options.schemaPath ? ['--output-schema', options.schemaPath] : []), '-o', options.outputPath, '-']
       : ['exec', ...runtimeArgs, '--json', '--color', 'never', '-s', options.readOnly ? 'read-only' : 'workspace-write', '-C', options.root, ...(options.schemaPath ? ['--output-schema', options.schemaPath] : []), '-o', options.outputPath, '-'];
-    const child = spawn(this.command, args, { cwd: options.root, detached: process.platform !== 'win32', env: options.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(this.command, args, { cwd: options.root, detached: process.platform !== 'win32', env: cliEnvironment(this.command, options.env ?? process.env), stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin.end(options.prompt);
     let buffer = '';
     let sessionId = options.sessionId;

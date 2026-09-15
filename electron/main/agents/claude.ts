@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { signalAgent } from './terminate.js';
-import path from 'node:path';
+import { cliCandidates, cliEnvironment } from './discovery.js';
 import type { AgentAdapterInfo, AgentEvent, JsonValue } from '../../../src/shared/types.js';
 import type { AdapterRunOptions, AdapterRunResult, AgentAdapter } from './adapter.js';
 import { exec, now } from '../utils.js';
@@ -15,26 +16,26 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   async info(): Promise<AgentAdapterInfo> {
-    const home = process.env.HOME || '';
-    for (const candidate of [...new Set([this.command, path.join(home, '.local', 'bin', 'claude'), '/usr/local/bin/claude', '/opt/homebrew/bin/claude'])]) {
+    for (const candidate of await cliCandidates(this.command, 'claude')) {
       try {
-        const { stdout } = await exec(candidate, ['--version']);
+        const { stdout } = await exec(candidate, ['--version'], undefined, 5_000, cliEnvironment(candidate));
         this.command = candidate;
-      if (this.checkAuthentication && !process.env.ANTHROPIC_API_KEY) {
+      if (this.checkAuthentication && !process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
         try {
-          const auth = JSON.parse((await exec(candidate, ['auth', 'status', '--json'])).stdout) as { loggedIn?: boolean; authMethod?: string };
+          const auth = JSON.parse((await exec(candidate, ['auth', 'status', '--json'], undefined, 8_000, cliEnvironment(candidate))).stdout) as { loggedIn?: boolean; authMethod?: string };
           if (!auth.loggedIn) throw new Error('not logged in');
-        } catch {
+        } catch (error) {
+          const loggedOut = error instanceof Error && error.message === 'not logged in';
           return {
-            id: 'claude', name: 'Claude Code', command: candidate, available: false, version: stdout.trim(), authenticated: false, checkedAt: now(),
-            reason: '已找到 Claude Code，但尚未登录。请先在Claude Code中完成登录；工作台不会保存凭据。',
+            id: 'claude', name: 'Claude Code', command: candidate, available: false, version: stdout.trim(), authenticated: loggedOut ? false : undefined, checkedAt: now(),
+            reason: loggedOut ? '已找到 Claude Code，但尚未登录。请先在 Claude Code 中登录。' : '已找到 Claude Code，但认证状态暂时无法核实。请在终端执行 claude auth status --json 核对登录或网关配置。',
             capabilities: { persistentSession: true, resumeSession: true, appendMessage: false, cancel: true, structuredOutput: false, fileModification: true, interAgentMessaging: false, approvalEvents: false, usage: true }
           };
         }
       }
       return {
         id: 'claude', name: 'Claude Code', command: candidate, available: true, version: stdout.trim(),
-        authenticated: true, checkedAt: now(),
+        authenticated: true, diagnostic: 'CLI 已找到，认证有效；任务使用 CLI 自身配置', checkedAt: now(),
         capabilities: { persistentSession: true, resumeSession: true, appendMessage: false, cancel: true, structuredOutput: false, fileModification: true, interAgentMessaging: false, approvalEvents: false, usage: true }
       };
       } catch { /* Try known user and package-manager locations. */ }
@@ -48,11 +49,15 @@ export class ClaudeAdapter implements AgentAdapter {
   run(options: AdapterRunOptions): AdapterRunResult {
     const args = [
       '-p', options.prompt,
+      ...(options.readOnly ? ['--tools', options.pureText ? '' : 'Read,Grep,Glob', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'] : []),
+      ...(options.pureText ? ['--system-prompt', '你是小说文字编辑。仅分析用户提供的正文，直接返回所要求的JSON，不写计划、不调用工具。'] : []),
+      ...(options.schemaPath ? ['--json-schema', readFileSync(options.schemaPath, 'utf8')] : []),
       '--output-format', 'stream-json', '--verbose',
-      '--permission-mode', options.readOnly ? 'plan' : 'acceptEdits',
+      '--permission-mode', options.readOnly ? 'default' : 'acceptEdits',
+      ...(options.model ? ['--model', options.model] : []),
       ...(options.sessionId ? ['--resume', options.sessionId] : [])
     ];
-    const child = spawn(this.command, args, { cwd: options.root, detached: process.platform !== 'win32', env: options.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(this.command, args, { cwd: options.root, detached: process.platform !== 'win32', env: cliEnvironment(this.command, options.env ?? process.env), stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin.end();
     const raw: string[] = [];
     let buffer = '';
@@ -80,10 +85,13 @@ export class ClaudeAdapter implements AgentAdapter {
           sessionId = announcedSessionId;
           options.onSessionId?.(announcedSessionId);
         }
-        if (event.type === 'result') finalMessage = String(event.result ?? finalMessage);
+        if (event.type === 'result') {
+          finalMessage = event.structured_output ? JSON.stringify(event.structured_output) : String(event.result ?? finalMessage);
+          if (event.is_error) forcedExitCode = 1;
+        }
         const payload = JSON.parse(JSON.stringify(event)) as JsonValue;
         const type: AgentEvent['type'] = event.type === 'assistant' ? 'message' : event.type === 'result' ? 'state' : 'raw';
-        if (event.type === 'assistant' || event.type === 'result') { meaningfulOutput = true; clearTimeout(startupTimer); }
+        if (event.type === 'assistant' || event.type === 'result' || (event.type === 'system' && event.subtype === 'thinking_tokens')) { meaningfulOutput = true; clearTimeout(startupTimer); }
         options.emit({ taskId: options.taskId, type, at: now(), payload });
       } catch { options.emit({ taskId: options.taskId, type: 'raw', at: now(), payload: line }); }
     };

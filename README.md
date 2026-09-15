@@ -1,6 +1,6 @@
 # 叙舟 · 长篇写作工作台
 
-一个以 Git 仓库承载作品、以本地桌面工作台承载交互、桥接 Codex CLI / Claude Code 等通用 Agent 的长篇网文 AI 写作系统。
+一个以 Git 仓库承载作品、以本地桌面工作台承载交互、桥接 Codex CLI / Claude Code / TraeX CLI 等通用 Agent 的长篇网文 AI 写作系统。
 
 它不直接调用模型 API，也不保存 Agent 的登录凭据。作者与 Writer 都直接编辑仓库里的 Markdown/TXT；Git diff 负责审查改动，但保存永远不等于提交，只有作者明确确认时工作台才会 stage/commit。
 
@@ -13,7 +13,7 @@
 - 打开项目后的继续创作卡、目标、结构化任务编辑/取消原因、阻塞和九阶段创作旅程；
 - 从一句灵感启动 Navigator，生成可比较路线，作者确认后才进入目标与任务；
 - “我卡住了”诊断、路线效果/因果/代价/风险/后续影响展示，并可选用、组合、重推或拒绝；
-- Codex CLI 完整适配和 Claude Code 协议/降级适配；
+- Codex CLI、Claude Code 与 TraeX CLI 适配，支持桌面环境下发现 NVM 等路径中的 CLI；
 - Agent 面板显示 CLI 版本、登录状态、实时消息/命令、中文终态与失败诊断；可重新检测连接；
 - Writer 在授权范围直接改正文，任务可停止，结果与改动摘要随仓库保存；重叠范围只允许一个 Writer，避免重复点击并发覆盖；
 - Observer 分析未保存缓冲区快照、划词评论、重定位/过期、反馈、解释和一次复查闭环；阻断意见可由作者显式发回原 Writer 会话；
@@ -27,11 +27,11 @@
 
 ## 下载桌面版
 
-在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.0 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
+在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.1 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
 
 ## 开发运行
 
-要求：macOS、Node.js 20+、Git，以及至少一个已经安装并登录的通用 Agent。当前完整验证的是 Codex CLI；Claude Code 未安装时会明确显示降级，不会伪装可用。
+要求：macOS、Node.js 20+、Git，以及至少一个已经安装并登录的通用 Agent。CLI 检测区分可执行文件与认证状态。Observer 的 CLI 选择独立保存，手动检查和 Writer 后自动检查都遵守该选择；不可用时明确报错，不自动切换。
 
 ```bash
 npm install
@@ -117,3 +117,9 @@ series-repo/
 从侧栏「文学审阅」按当前章节精读，或联合审读最近3—5章。报告列出逐章证据、六项检查、无法定位的意见和旧版状态；Writer完成后默认自动检查实际改动文件，并核对写作要求是否达成。多章改写可显式勾选范围，改写前自动保留恢复点。详见 [文学审阅与验收](docs/LITERARY_REVIEW.md)。
 
 项目设置可为Codex Writer和文学审阅分别指定模型与推理强度，参数写入每次任务记录；不修改全局CLI设置，也不暗中选择轻量模型。
+
+### 两遍文字审阅
+
+Observer 先在独立阅读目录中只读正文，保存各章理解与阅读卡顿；再使用作品上下文审查六个维度，并逐条保留或解释排除第一遍疑点。轻量润色也会记录，不要求达到阻塞写作的程度。旧报告保留，新覆盖只统计两遍审读；需要补审的旧章可在「文学审阅」选择连续章范围运行。
+
+Claude 的只读审查只开放 Read/Grep/Glob，第一遍不开放工具；使用 CLI 的结构化输出接口。检测成功代表本地 CLI 与认证可用，实际模型连接和审查结论需以任务结果为准。有限样本检验不能保证发现所有文学问题。

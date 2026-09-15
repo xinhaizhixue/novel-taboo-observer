@@ -36,7 +36,13 @@ async function fixture() {
       let finish!: (value: Awaited<AdapterRunResult['completed']>) => void;
       const completed = new Promise<Awaited<AdapterRunResult['completed']>>((resolve) => { finish = resolve; });
       const result = (text: string, exitCode = 0) => ({ sessionId: options.sessionId || 'controlled-session', finalMessage: text, exitCode, raw: [] });
-      runs.push({ options, finish: (text = cleanReview) => finish(result(text)) });
+      if (!options.pureText && options.prompt.includes('你是独立的长篇网文 Observer')) finish(result(cleanReview));
+      else runs.push({ options, finish: (text = cleanReview) => {
+        if (options.pureText) {
+          const readings = [...options.prompt.matchAll(/### ([^\n]+)\n([\s\S]*?)(?=\n\n### |$)/g)].map(m => ({ filePath: m[1], quote: m[2].trim(), understanding: '已阅读', frictions: [] }));
+          finish(result(JSON.stringify({ readings })));
+        } else finish(result(text));
+      } });
       return { completed, process: { kill: () => { finish(result('', 143)); return true; } } as never };
     }
   };

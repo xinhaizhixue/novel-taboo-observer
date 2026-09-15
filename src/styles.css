@@ -780,3 +780,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app.is-right-closed:not(.is-git):not(.is-focus) { grid-template-columns: 76px 258px minmax(0, 1fr); }
 @media (max-width: 1220px) { .app.is-right-closed:not(.is-git):not(.is-focus) { grid-template-columns: 58px 224px minmax(0, 1fr); } }
 .writer-chapter-scope > button { width: 100%; text-align: left; padding: 5px 0; background: transparent; color: inherit; }
+
+/* Options participate in layout, so they cannot obscure neighboring form fields. */
+.choice-select { min-width: 0; width: 100%; font-size: 12px; }
+.choice-trigger { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid #cfc5b6; border-radius: 8px; background: #fffdf8; color: #302e29; text-align: left; }
+.choice-trigger span { min-width: 0; overflow-wrap: anywhere; }
+.choice-trigger svg { flex-shrink: 0; }
+.choice-trigger[aria-expanded="true"] { border-color: #986344; background: #f5eee4; }
+.choice-options { display: flex; flex-direction: column; gap: 3px; margin-top: 5px; padding: 5px; max-height: 240px; overflow-y: auto; border: 1px solid #cfc5b6; border-radius: 8px; background: #fffdf8; }
+.choice-options button { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; padding: 9px 10px; width: 100%; border: 0; border-radius: 5px; text-align: left; color: #302e29; background: transparent; white-space: normal; }
+.choice-options button:hover, .choice-options button:focus-visible { background: #f0e9dd; }
+.choice-options button[aria-selected="true"] { background: #e8edde; color: #364936; }
+.choice-options button:disabled { color: #746f66; background: #f2efe9; cursor: not-allowed; }
+.compose-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 8px; }
+.compose-row > .choice-select { flex: 1; }
+.review-compose .choice-select { max-width: 320px; }
+.agent-model-settings .choice-select { max-width: 260px; }
+.observer-adapter { margin: 10px 0; }

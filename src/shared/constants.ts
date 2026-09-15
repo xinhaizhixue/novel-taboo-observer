@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS = {
     globalBytes: 2 * 1024 * 1024 * 1024
   },
   observer: {
+    adapter: 'codex' as 'codex' | 'claude' | 'traex',
     mode: 'standard' as 'low' | 'standard' | 'high' | 'manual',
     idleMs: 20_000,
     changedCharacters: 150,

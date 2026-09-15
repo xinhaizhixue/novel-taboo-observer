@@ -17,6 +17,7 @@ async function fixture() {
   const file = await project.readFile('manuscript/第五章.md');
   const input: ObserverRunRequest = { adapterId: 'codex', mode: 'manual', reviewScope: 'sequence', reviewWindow: 5, reportId: 'test-report', snapshot: { id: 'snapshot', filePath: file.path, hash: file.hash, content: file.content, editorVersion: 1, createdAt: new Date().toISOString() } };
   const bundle = await buildReviewBundle(project, input);
+  input.coldReading = { readings: bundle.sources.map(s => ({filePath:s.filePath,quote:s.content,understanding:'已阅读',frictions:[]})) };
   return { project, input: { ...input, bundle }, bundle };
 }
 function chapterReadings(input: ObserverRunRequest) { return input.bundle!.sources.map((source) => ({ filePath: source.filePath, change: '本章的场景推进。', evidence: [{ filePath: source.filePath, quote: source.content }] })); }
@@ -138,4 +139,14 @@ it('新的任务上下文包含有效审阅观察，并排除改稿后过期的�
   await project.writeFile(input.snapshot.filePath, '改稿后的新场景');
   const next = await new ContextAssembler(project).build({ task: '继续下一章', budget: 28000 });
   expect(JSON.parse(next.items.find((item) => item.kind === 'workbench-state')!.content).literaryReviews).toEqual([]);
+});
+
+it('首次阅读疑点不能被第二遍静默丢弃，保留须有评论，排除须给理由', async () => {
+ const {input,bundle}=await fixture();const report=pendingReview(input,'cold-test');
+ report.coldReading={readings:[...input.coldReading!.readings.filter(r=>r.filePath!==input.snapshot.filePath),{filePath:input.snapshot.filePath,quote:'门外的街道空了。',understanding:'读到街道无人',frictions:[{quote:'门外的街道空了。',difficulty:'衔接有疑点',suggestion:'核对前文'}]}]};
+ const parsed={assessments:completeAssessments(input),chapterReadings:chapterReadings(input)};
+ expect(finishReview(report,bundle,parsed,[],[]).status).toBe('incomplete');
+ const row={filePath:input.snapshot.filePath,quote:'门外的街道空了。',decision:'dismiss',reason:'前文已明确离开室内，没有缺少动作。'};
+ expect(finishReview(report,bundle,{...parsed,coldResolutions:[row]},[],[]).status).toBe('clear');
+ expect(finishReview(report,bundle,{...parsed,coldResolutions:[{...row,decision:'retain'}]},[],[]).status).toBe('incomplete');
 });

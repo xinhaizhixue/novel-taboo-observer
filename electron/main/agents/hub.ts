@@ -9,10 +9,10 @@ import { ProjectService } from '../project.js';
 import { AuthorProfileStore } from '../profile.js';
 import { makeAnchor } from '../observer.js';
 import { atomicWrite, exec, hashText, now, uid, writeJson } from '../utils.js';
-import type { AgentAdapter } from './adapter.js';
+import type { AdapterRunOptions, AgentAdapter } from './adapter.js';
 import { ClaudeAdapter } from './claude.js';
 import { CodexAdapter } from './codex.js';
-import { NAVIGATION_SCHEMA, OBSERVER_SCHEMA, STYLE_SCHEMA, observerPrompt, taskPrompt } from './prompts.js';
+import { COLD_READING_SCHEMA, coldReadingPrompt, NAVIGATION_SCHEMA, OBSERVER_SCHEMA, STYLE_SCHEMA, observerPrompt, taskPrompt } from './prompts.js';
 
 import { compareNaturalPath } from '../../../src/shared/natural-sort.js';
 import { ContextAssembler } from '../context.js';
@@ -84,7 +84,7 @@ export class AgentHub {
   private readonly records = new Map<string, AgentTaskRecord>();
   private readonly listeners = new Set<(event: AgentEvent) => void>();
 
-  constructor(private readonly appData: string, private readonly project: ProjectService, private readonly profile: AuthorProfileStore, adapters: AgentAdapter[] = [new CodexAdapter(), new ClaudeAdapter()]) {
+  constructor(private readonly appData: string, private readonly project: ProjectService, private readonly profile: AuthorProfileStore, adapters: AgentAdapter[] = [new CodexAdapter(), new ClaudeAdapter(), new CodexAdapter(process.env.NOVEL_OBSERVER_TRAEX_PATH || 'traex', false, undefined, 'traex')]) {
     this.adapters = new Map(adapters.map((adapter) => [adapter.id, adapter]));
   }
 
@@ -243,13 +243,39 @@ export class AgentHub {
       if (activeTask) activeTask.sessionPersistence = sessionPersistence;
       this.emit({ taskId: id, type: 'state', at: now(), payload: { state: record.state, role: record.role, sessionId, phase: 'connected' } });
     };
-    const run = adapter.run({ model: input.model, taskId: id, root: this.project.activeRoot, prompt, readOnly, schemaPath, outputPath, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(input.role) ? 300_000 : 180_000, reasoningEffort, ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(input.allowNetwork), recordRaw, onSessionId, emit: (event) => this.emit(event) });
+    const runOptions: AdapterRunOptions = { model: input.model, taskId: id, root: this.project.activeRoot, prompt, readOnly, schemaPath, outputPath, env: await this.guardedEnvironment(), startupTimeoutMs: ['writer', 'researcher'].includes(input.role) ? 300_000 : 180_000, reasoningEffort, ignoreUserConfig: isolatedReadOnly, networkAccess: Boolean(input.allowNetwork), recordRaw, onSessionId, emit: (event) => this.emit(event) };
+    const twoPass = observer && observer.mode !== 'explain';
+    let firstOptions = runOptions;
+    if (twoPass) {
+      const readingRoot = path.join(directory, 'reading'); await mkdir(readingRoot, { recursive: true });
+      const readingSchema = path.join(directory, 'reading-schema.json'); await writeJson(readingSchema, COLD_READING_SCHEMA);
+      firstOptions = { ...runOptions, root: readingRoot, prompt: coldReadingPrompt(observer), pureText: true, schemaPath: readingSchema, outputPath: path.join(directory, 'reading.txt') };
+    }
+    const run = adapter.run(firstOptions);
+
     activeTask = { process: run.process, record, adapter, settled: Promise.resolve(), sessionPersistence };
     this.active.set(id, activeTask);
     this.startingWriters.delete(id);
     this.records.set(id, record);
     this.emit({ taskId: id, type: 'state', at: now(), payload: { state: 'running', role: input.role } });
-    const settled = run.completed.then(async (result) => {
+    const completed = run.completed.then(async (first) => {
+      if (!twoPass || first.exitCode !== 0 || record.state === 'cancelled') return first;
+      const reading = parseObject(first.finalMessage) as unknown as import('../../../src/shared/types.js').ColdReading;
+      for (const source of observer.bundle!.sources) {
+        const rows = reading.readings?.filter(row => row.filePath === source.filePath);
+        if (rows?.length !== 1 || !rows[0].quote?.trim() || !source.content.includes(rows[0].quote) || !rows[0].understanding?.trim() || !Array.isArray(rows[0].frictions) || rows[0].frictions.some(item => !item.quote?.trim() || !source.content.includes(item.quote) || !item.difficulty?.trim() || !item.suggestion?.trim())) throw new Error('第一遍正文阅读记录缺失或引文不匹配，不能宣布审查完成。');
+      }
+      observer.coldReading = reading;
+      await writeJson(path.join(directory, 'cold-reading.json'), reading);
+      await this.project.eventStore.append('review.report', { ...pendingReview(observer, id), coldReading: reading, summary: '独立正文阅读已完成，正在结合上下文复核。' } as never, 'observer');
+      if (this.active.get(id)?.record.state === 'cancelled') return { ...first, exitCode: 143 };
+      this.emit({ taskId: id, type: 'message', at: now(), payload: '第一遍正文阅读已保存，开始第二遍上下文审查。' });
+      const second = adapter.run({ ...runOptions, prompt: observerPrompt(observer) + '\n输出 JSON Schema：' + JSON.stringify(OBSERVER_SCHEMA) });
+      activeTask!.process = second.process;
+      const result = await second.completed;
+      return { ...result, raw: [...first.raw, ...result.raw] };
+    });
+    const settled = completed.then(async (result) => {
       if (readOnly) await this.waitForConcurrentWriters(id);
       await sessionPersistence;
       record.sessionId = result.sessionId;
