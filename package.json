@@ -1,6 +1,6 @@
 {
   "name": "novel-observer",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "以 Git 仓库承载作品、桥接通用 Agent 的本地长篇网文写作工作台",
   "author": "Novel Observer contributors",
@@ -72,6 +72,7 @@
     "cross-env": "^10.0.0",
     "electron": "^37.2.6",
     "electron-builder": "^26.0.12",
+    "jsdom": "^29.1.1",
     "tsx": "^4.20.4",
     "typescript": "^5.9.2",
     "vite": "^7.1.2",

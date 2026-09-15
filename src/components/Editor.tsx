@@ -1,8 +1,8 @@
-import { createElement, useMemo } from 'react';
+import { createElement, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { EditorView } from '@codemirror/view';
-import { observerCommentDecorations } from '@/lib/editor-comments';
+import { commentDecorationKey, observerCommentLayer, updateObserverComments } from '@/lib/editor-comments';
 import type { ObserverComment } from '@/shared/types';
 
 interface EditorProps {
@@ -15,20 +15,35 @@ interface EditorProps {
   onCreate(view: EditorView): void;
 }
 
+const EDITOR_EXTENSIONS = [markdown(), EditorView.lineWrapping, observerCommentLayer];
+const BASIC_SETUP = { lineNumbers: false, foldGutter: false, highlightActiveLineGutter: false, highlightActiveLine: false, bracketMatching: false, autocompletion: false, closeBrackets: false, rectangularSelection: false };
+
 export function Editor({ value, comments, readOnly, focusMode, onChange, onBlur, onCreate }: EditorProps) {
-  const extensions = useMemo(() => [markdown(), EditorView.lineWrapping, observerCommentDecorations(comments)], [comments]);
+  // The parent also renders for CLI progress. Callback identity must not cause
+  // @uiw/react-codemirror to dispatch StateEffect.reconfigure on every token.
+  const callbacks = useRef({ onChange, onBlur, onCreate });
+  useLayoutEffect(() => { callbacks.current = { onChange, onBlur, onCreate }; });
+  const [view, setView] = useState<EditorView | null>(null);
+  const handleChange = useCallback((content: string) => callbacks.current.onChange(content), []);
+  const handleBlur = useCallback(() => callbacks.current.onBlur(), []);
+  const handleCreate = useCallback((editor: EditorView) => { setView(editor); callbacks.current.onCreate(editor); }, []);
+  const decorationKey = commentDecorationKey(comments);
+  useEffect(() => {
+    if (view) view.dispatch({ effects: updateObserverComments.of(comments) });
+    // Refresh only when visible annotation data changes, not on cloned reports.
+  }, [view, decorationKey]);
   return (
-    <div className={`editor-shell ${focusMode ? 'focus-mode' : ''}`} onBlur={onBlur}>
+    <div className={`editor-shell ${focusMode ? 'focus-mode' : ''}`} onBlur={handleBlur}>
       <CodeMirror
         value={value}
         height="100%"
-        extensions={extensions}
+        extensions={EDITOR_EXTENSIONS}
         editable={!readOnly}
         readOnly={readOnly}
-        basicSetup={{ lineNumbers: false, foldGutter: false, highlightActiveLineGutter: false, highlightActiveLine: false, bracketMatching: false, autocompletion: false, closeBrackets: false, rectangularSelection: false }}
+        basicSetup={BASIC_SETUP}
         theme="none"
-        onChange={onChange}
-        onCreateEditor={onCreate}
+        onChange={handleChange}
+        onCreateEditor={handleCreate}
       />
     </div>
   );

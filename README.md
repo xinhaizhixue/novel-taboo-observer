@@ -27,7 +27,7 @@
 
 ## 下载桌面版
 
-在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.1 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
+在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.2 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
 
 ## 开发运行
 
