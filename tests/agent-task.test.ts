@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { currentTaskForAgent, suggestedObjectiveForAgent } from '../src/lib/agent-task.js';
+import { currentTaskForAgent, suggestedObjectiveForAgent, taskObjectiveForAgent } from '../src/lib/agent-task.js';
 import type { CreativeTask } from '../src/shared/types.js';
 
 const base: CreativeTask = {
@@ -7,6 +7,31 @@ const base: CreativeTask = {
 };
 
 describe('Agent复用正式创作任务', () => {
+  it('标题复用任务时把详细说明加入实际目标，作者补充保留在最后', () => {
+    const task = { ...base, description: '先读第4—6章。只改第7章，保留已经解决的供水成果。' };
+    const draft = `${task.title}\n\n这次重点检查动作和对话。`;
+    expect(currentTaskForAgent([task], 'writer', draft)?.id).toBe(task.id);
+    const resolved = taskObjectiveForAgent([task], 'writer', draft);
+    expect(resolved).toBe(`${task.title}\n\n${task.description}\n\n这次重点检查动作和对话。`);
+    expect(taskObjectiveForAgent([task], 'writer', resolved)).toBe(resolved);
+    expect(taskObjectiveForAgent([task], 'writer', task.title)).toContain(task.description);
+  });
+
+  it('不会把其他任务说明混入新指令，也不会重复自动任务描述里的标题', () => {
+    const task = { ...base, description: `${base.title}\n\n完整说明。` };
+    expect(taskObjectiveForAgent([task], 'writer', base.title)).toBe(task.description);
+    expect(taskObjectiveForAgent([task], 'writer', '写第8章')).toBe('写第8章');
+    expect(taskObjectiveForAgent([{ ...task, status: 'completed' }], 'writer', base.title)).toBe(base.title);
+  });
+
+  it('三章任务标题能匹配其实际章节，但参考范围不会变成修改目标', () => {
+    const task = { ...base, title: '第27—29章：新的航程', links: ['manuscript/第26章.md', 'manuscript/第27章.md', 'manuscript/第28章.md', 'manuscript/第29章.md'] };
+    expect(suggestedObjectiveForAgent([task], '', 'writer', 'manuscript/第27章.md')).toBe(task.title);
+    expect(suggestedObjectiveForAgent([task], '', 'writer', 'manuscript/第29章.md')).toBe(task.title);
+    expect(suggestedObjectiveForAgent([task], '', 'writer', 'manuscript/第26章.md')).toBe('继续完善第26章');
+    expect(suggestedObjectiveForAgent([{ ...task, title: '参考第27—29章，续写第30章' }], '', 'writer', 'manuscript/第27章.md')).toBe('继续完善第27章');
+  });
+
   it('Writer目标与当前写作任务同名时复用原任务和完整完成条件', () => {
     expect(currentTaskForAgent([base], 'writer', ` ${base.title} `)).toBe(base);
   });

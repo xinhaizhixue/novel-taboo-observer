@@ -12,7 +12,7 @@ import { Editor, MarkdownPreview } from '@/components/Editor';
 import { AgentModelSettings } from '@/components/AgentModelSettings';
 import { ReviewPanel } from '@/components/ReviewPanel';
 import { HelpPanel } from '@/components/HelpPanel';
-import { currentTaskForAgent, suggestedObjectiveForAgent } from '@/lib/agent-task';
+import { currentTaskForAgent, suggestedObjectiveForAgent, taskObjectiveForAgent } from '@/lib/agent-task';
 import { commentNeedsAction, commentStatusLabel, partitionObserverComments } from '@/lib/comments';
 import { fileCharacterLabel } from '@/lib/file-labels';
 import { addAuthorContextNote, setContextItemIncluded } from '@/lib/context-pack';
@@ -1113,12 +1113,13 @@ function AgentsPanel({ project, agents, events, buffer, contextPack, preset, onC
   const records = [...project.agentTasks].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const selectedAgent = agents.find((item) => item.id === adapter);
   const writerBusy = role === 'writer' && records.some((item) => item.role === 'writer' && item.state === 'running');
-  const duplicateBusy = records.some((item) => item.role === role && item.state === 'running' && item.objective.trim() === objective.trim());
-  const contextMatches = Boolean(contextPack && contextPack.task === objective && (!buffer || contextPack.items.some((item) => item.kind === 'current-buffer' && item.source === buffer.path)));
+  const effectiveObjective = taskObjectiveForAgent(project.tasks, role, objective);
+  const duplicateBusy = records.some((item) => item.role === role && item.state === 'running' && item.objective.trim() === effectiveObjective);
+  const contextMatches = Boolean(contextPack && contextPack.task === effectiveObjective && (!buffer || contextPack.items.some((item) => item.kind === 'current-buffer' && item.source === buffer.path)));
   const buildContext = async () => {
     setPreparing(true); setError('');
     try {
-      const pack = buffer ? await window.workbench.createContextPack({ task: objective, filePath: buffer.path, content: buffer.content }) : await window.workbench.createContextPack({ task: objective });
+      const pack = buffer ? await window.workbench.createContextPack({ task: effectiveObjective, filePath: buffer.path, content: buffer.content }) : await window.workbench.createContextPack({ task: effectiveObjective });
       onContext(pack);
       return pack;
     } finally { setPreparing(false); }
@@ -1132,9 +1133,9 @@ function AgentsPanel({ project, agents, events, buffer, contextPack, preset, onC
       const currentTask = currentTaskForAgent(project.tasks, role, objective);
       const fallbackCriteria = role === 'writer' ? ['正文直接写入授权文件', '遵守当前目标、正典和角色知识边界', '最终列出实际修改'] : role === 'researcher' ? ['研究结果只写入 research/', '标出来源、推断和待核实问题', '不得修改正文或正典'] : ['navigator', 'architect'].includes(role) ? ['先诊断再给 2～4 条可比较路线', '说明效果、代价、风险和后续影响'] : ['完成角色职责范围内的分析', '区分正文证据、推断和建议，明确仍需作者决定的事项'];
       const completionCriteria = currentTask?.completionCriteria.length ? currentTask.completionCriteria : fallbackCriteria;
-      const task = currentTask || await window.workbench.updateTask({ title: objective.split(/\r?\n/)[0].slice(0, 96), description: objective, status: 'now', kind: role === 'researcher' ? 'research' : role === 'editor' ? 'review' : role === 'writer' ? 'writing' : 'revision', assignee: role, source: 'author', whyNow: '作者从 Agent 会话明确启动了这项工作。', aiPreAnalysis: `上下文包 ${pack.id} · ${pack.characters}/${pack.budget} 字符`, completionCriteria, links: buffer ? [buffer.path] : [] });
+      const task = currentTask || await window.workbench.updateTask({ title: objective.split(/\r?\n/)[0].slice(0, 96), description: objective, status: 'now', kind: role === 'researcher' ? 'research' : role === 'editor' ? 'review' : role === 'writer' ? 'writing' : 'revision', assignee: role, source: 'author', whyNow: '作者从 Agent 会话明确启动了这项工作。', aiPreAnalysis: `上下文包 ${pack.id} · ${pack.characters}/${pack.budget} 字符`, completionCriteria, links: role === 'writer' ? writerScope : buffer ? [buffer.path] : [] });
       taskId = task.id;
-      await window.workbench.runAgent({ adapterId: adapter, role, objective, creativeTaskId: task.id, scope: role === 'writer' ? writerScope : role === 'researcher' ? ['research'] : ['planning', 'canon'], completionCriteria, contextPack: pack, allowNetwork: role === 'researcher' && allowNetwork });
+      await window.workbench.runAgent({ adapterId: adapter, role, objective: effectiveObjective, creativeTaskId: task.id, scope: role === 'writer' ? writerScope : role === 'researcher' ? ['research'] : ['planning', 'canon'], completionCriteria, contextPack: pack, allowNetwork: role === 'researcher' && allowNetwork });
       await onRefresh();
     } catch (cause) { const message = errorMessage(cause); setError(message); if (taskId) await window.workbench.updateTask({ id: taskId, status: 'cancelled', cancellationReason: `Agent 未启动：${message}` }).catch(() => {}); await onRefresh(); } finally { setRunning(false); }
   };
@@ -1179,7 +1180,7 @@ function ContextPanel({ pack, onBuild, onChange }: { pack: ContextPack | null; o
     const result = addAuthorContextNote(pack, note, crypto.randomUUID());
     if (result.error) setError(result.error); else { setError(''); setNote(''); onChange(result.pack); }
   };
-  return <div className="panel-content context-panel"><div className="context-header"><div><b>Agent 看到了什么</b><span>勾选内容会真实进入下一次任务</span></div><button onClick={onBuild}>重新组装</button></div>{pack ? <><div className="budget-bar"><span style={{ width: `${Math.min(100, pack.characters / pack.budget * 100)}%` }} /><small>{pack.characters.toLocaleString()} / {pack.budget.toLocaleString()} 字符</small></div><div className="context-author-note"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="补充本次任务的临时背景、例外或作者要求…" /><button disabled={!note.trim()} onClick={addNote}>加入本次上下文</button></div>{error && <p className="form-error context-error">{error}</p>}{pack.items.map((item) => <details key={item.id} className={item.included ? '' : 'excluded'}><summary><span><input type="checkbox" checked={item.included} disabled={item.kind === 'current-buffer'} title={item.kind === 'current-buffer' ? '当前任务正文不能排除' : item.included ? '从本次上下文排除' : '加入本次上下文'} onClick={(event) => event.stopPropagation()} onChange={(event) => toggle(item.id, event.target.checked)} />{item.title}</span><small>{item.characters} 字</small></summary><div><b>来源：{item.source}</b><p>{item.reason}</p><pre>{item.content.slice(0, 1_500)}{item.content.length > 1_500 ? '\n…' : ''}</pre></div></details>)}{pack.gaps.map((gap) => <p className="context-gap" key={gap}><CircleAlert size={14} />{gap}</p>)}</> : <div className="panel-empty"><Archive size={28} /><b>尚未组装上下文</b><span>先预览上下文，再决定是否排除资料或补充临时说明。</span><button onClick={onBuild}>查看当前上下文</button></div>}</div>;
+  return <div className="panel-content context-panel"><div className="context-header"><div><b>Agent 看到了什么</b><span>勾选内容会真实进入下一次任务</span></div><button onClick={onBuild}>重新组装</button></div>{pack ? <><div className="budget-bar"><span style={{ width: `${Math.min(100, pack.characters / pack.budget * 100)}%` }} /><small>{pack.characters.toLocaleString()} / {pack.budget.toLocaleString()} 字符</small></div><details className="context-task"><summary>本次任务与说明</summary><div><pre>{pack.task}</pre></div></details><div className="context-author-note"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="补充本次任务的临时背景、例外或作者要求…" /><button disabled={!note.trim()} onClick={addNote}>加入本次上下文</button></div>{error && <p className="form-error context-error">{error}</p>}{pack.items.map((item) => <details key={item.id} className={item.included ? '' : 'excluded'}><summary><span><input type="checkbox" checked={item.included} disabled={item.kind === 'current-buffer'} title={item.kind === 'current-buffer' ? '当前任务正文不能排除' : item.included ? '从本次上下文排除' : '加入本次上下文'} onClick={(event) => event.stopPropagation()} onChange={(event) => toggle(item.id, event.target.checked)} />{item.title}</span><small>{item.characters} 字</small></summary><div><b>来源：{item.source}</b><p>{item.reason}</p><pre>{item.content.slice(0, 1_500)}{item.content.length > 1_500 ? '\n…' : ''}</pre></div></details>)}{pack.gaps.map((gap) => <p className="context-gap" key={gap}><CircleAlert size={14} />{gap}</p>)}</> : <div className="panel-empty"><Archive size={28} /><b>尚未组装上下文</b><span>先预览上下文，再决定是否排除资料或补充临时说明。</span><button onClick={onBuild}>查看当前上下文</button></div>}</div>;
 }
 
 function EmptyCenter({ view, onBack }: { view: 'agents' | 'comments'; onBack(): void }) { return <div className="empty-editor">{view === 'agents' ? <Bot size={34} /> : <MessageSquareText size={34} />}<h2>{view === 'agents' ? 'Agent 会话在右侧进行' : '评论线程在右侧显示'}</h2><p>正文仍是工作台中心。你可以一边看原文，一边处理建议和任务。</p><button className="primary" onClick={onBack}>返回写作现场</button></div>; }
