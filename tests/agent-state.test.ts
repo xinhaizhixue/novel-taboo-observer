@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AgentHub, scopesOverlap } from '../electron/main/agents/hub.js';
 import { AuthorProfileStore } from '../electron/main/profile.js';
 import { ProjectService } from '../electron/main/project.js';
-import type { AgentTaskRecord } from '../src/shared/types.js';
+import type { AgentTaskRecord, ReviewReport } from '../src/shared/types.js';
 import type { AgentAdapter } from '../electron/main/agents/adapter.js';
 
 const roots: string[] = [];
@@ -53,6 +53,12 @@ describe('Agent 中断恢复', () => {
     await project.create({ root, title: '中断测试', kind: 'novel' });
     const record: AgentTaskRecord = { id: 'agent-running', adapterId: 'codex', role: 'writer', state: 'running', objective: '续写', scope: ['manuscript/第一章.md'], completionCriteria: ['完成场景'], startedAt: new Date().toISOString(), startHashes: {}, changedFiles: [] };
     await project.eventStore.append('agent.task', record as never, 'agent');
+    const report: ReviewReport = {
+      id: 'review-interrupted', taskId: record.id, scope: 'chapter', status: 'running', primaryFile: 'manuscript/第一章.md', createdAt: record.startedAt,
+      summary: '正在逐项审阅；尚无结论。', sources: [], omittedPaths: [], gaps: [], assessments: [], commentIds: [], unanchored: []
+    };
+    await project.eventStore.append('review.report', report as never, 'observer');
+    await project.eventStore.append('review.report', { ...report, id: 'review-no-task', taskId: 'task-not-persisted' } as never, 'observer');
 
     const reopened = new ProjectService('second-session');
     await reopened.open(root);
@@ -61,5 +67,15 @@ describe('Agent 中断恢复', () => {
     const restored = (await reopened.state()).agentTasks.find((item) => item.id === record.id);
     expect(restored?.state).toBe('interrupted');
     expect(restored?.error).toContain('不会自动重跑');
+    const reviews = (await reopened.state()).reviews ?? [];
+    expect(reviews).toHaveLength(2);
+    for (const review of reviews) {
+      expect(review.status).toBe('failed');
+      expect(review.summary).toContain('未自动重跑');
+      expect(review.gaps.join('')).toContain('未获得完整结论');
+      expect(review.completedAt).toBeTruthy();
+    }
+    await hub.reconcileInterrupted();
+    expect((await reopened.state()).reviews).toEqual(reviews);
   });
 });

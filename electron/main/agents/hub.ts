@@ -100,10 +100,20 @@ export class AgentHub {
   async reconcileInterrupted() {
     const state = await this.project.state();
     for (const record of state.agentTasks.filter((item) => item.state === 'running' || item.state === 'queued')) {
+      if (this.active.has(record.id)) continue;
       const interrupted: AgentTaskRecord = { ...record, state: 'interrupted', endedAt: now(), error: '应用或 Agent 会话在任务完成前中断；工作台不会自动重跑，请先检查现有 diff。' };
       this.records.set(interrupted.id, interrupted);
       await this.project.eventStore.append('agent.task', interrupted as never, 'system');
       await this.syncCreativeTask(interrupted);
+    }
+    for (const report of (state.reviews ?? []).filter((item) => item.status === 'running')) {
+      if (this.active.has(report.taskId)) continue;
+      const summary = '上次审阅在形成完整结论前中断；本次未自动重跑，请按当前版本重新审阅。';
+      const interrupted: ReviewReport = {
+        ...report, status: 'failed', completedAt: now(), summary,
+        gaps: [...new Set([...report.gaps, '审阅没有存活的执行任务，未获得完整结论。'])]
+      };
+      await this.project.eventStore.append('review.report', interrupted as never, 'system');
     }
   }
   private emit(event: AgentEvent) { for (const listener of this.listeners) listener(event); }

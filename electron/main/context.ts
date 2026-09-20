@@ -33,6 +33,20 @@ function chapterNumber(filePath?: string) {
   return match ? Number(match[1]) : undefined;
 }
 
+function taskReferencesFile(task: string, filePath: string) {
+  const normalized = task.toLowerCase().replaceAll('\\', '/');
+  const source = filePath.toLowerCase();
+  if (normalized.includes(source) || normalized.includes(path.posix.basename(source))) return true;
+  const chapter = chapterNumber(filePath);
+  if (chapter === undefined) return false;
+  for (const match of normalized.matchAll(/第\s*(\d+)\s*(?:[—–\-~～至到]\s*第?\s*(\d+)\s*)?章/gu)) {
+    const first = Number(match[1]);
+    const last = Number(match[2] ?? match[1]);
+    if (chapter >= Math.min(first, last) && chapter <= Math.max(first, last)) return true;
+  }
+  return false;
+}
+
 function profileSnapshot(value?: string) {
   if (!value) return undefined;
   try { return JSON.parse(value) as unknown; } catch { return { error: '作者档案快照损坏，需要重新关联或导入' }; }
@@ -57,7 +71,7 @@ export class ContextAssembler {
     const budget = Math.min(80_000, Math.max(4_000, input.budget ?? 28_000));
     const state = await this.project.state();
     const queryTerms = terms(`${input.task}\n${input.content ?? ''}\n${state.continueCard.goal?.title ?? ''}`);
-    const candidates: Array<ContextItem & { score: number; fixed?: boolean; essential?: boolean }> = [];
+    const candidates: Array<ContextItem & { score: number; fixed?: boolean; essential?: boolean; requested?: boolean }> = [];
     if (input.filePath && input.content !== undefined) {
       candidates.push({ id: uid('ctx'), kind: 'current-buffer', title: `当前缓冲区 · ${path.basename(input.filePath)}`, source: input.filePath, content: input.content, reason: '任务直接作用的当前文本，包含尚未保存内容', characters: input.content.length, included: true, score: 10_000, fixed: true });
     }
@@ -67,6 +81,7 @@ export class ContextAssembler {
     const files = state.files.filter((file) => file.path !== input.filePath && ['manuscript', 'canon', 'planning', 'research', 'decision'].includes(file.category));
     for (const file of files) {
       const full = await readFile(path.join(this.project.activeRoot, file.path), 'utf8');
+      const requested = taskReferencesFile(input.task, file.path);
       const lexicalRelevance = relevance(full, queryTerms);
       const base = file.category === 'canon' ? 60 : file.category === 'planning' ? 45 : file.category === 'research' ? lexicalRelevance > 0 ? 85 : 10 : file.category === 'decision' ? 40 : 0;
       const manuscriptIndex = file.category === 'manuscript' ? manuscriptFiles.findIndex((item) => item.path === file.path) : -1;
@@ -76,10 +91,11 @@ export class ContextAssembler {
         : currentManuscriptIndex >= 0 && manuscriptIndex >= 0 ? Math.abs(manuscriptIndex - currentManuscriptIndex) : Number.POSITIVE_INFINITY;
       const related = manuscriptDistance <= 3 ? 130 - manuscriptDistance * 15 : 0;
       const score = base + related + lexicalRelevance;
-      if (score <= 0) continue;
+      if (score <= 0 && !requested) continue;
       const maxExcerpt = file.category === 'manuscript' ? 5_000 : 3_500;
       const content = excerpt(full, queryTerms, maxExcerpt);
-      candidates.push({ id: uid('ctx'), kind: file.category, title: path.basename(file.path), source: file.path, content, reason: file.category === 'canon' ? '相关正典与故事事实' : file.category === 'planning' ? '当前目标与滚动规划' : file.category === 'research' ? '任务相关研究资料，尚不等于正典' : file.category === 'decision' ? '作者已确认的高影响决定' : related > 0 ? '当前章节相邻正文' : '任务关键词命中的既有正文', characters: content.length, included: false, score, essential: file.category === 'manuscript' && manuscriptDistance <= 2 });
+      const reason = file.category === 'canon' ? '相关正典与故事事实' : file.category === 'planning' ? '当前目标与滚动规划' : file.category === 'research' ? '任务相关研究资料，尚不等于正典' : file.category === 'decision' ? '作者已确认的高影响决定' : related > 0 ? '当前章节相邻正文' : '任务关键词命中的既有正文';
+      candidates.push({ id: uid('ctx'), kind: file.category, title: path.basename(file.path), source: file.path, content, reason: requested ? `本次任务明确引用；${reason}` : reason, characters: content.length, included: false, score, requested, essential: file.category === 'manuscript' && manuscriptDistance <= 2 });
     }
     const relevantFacts = state.facts
       .map((fact) => ({ fact, score: relevance(`${fact.subject}\n${fact.statement}`, queryTerms) }))
@@ -102,7 +118,14 @@ export class ContextAssembler {
       item.included = true;
       used += item.characters;
     }
+    for (const item of ranked.filter((candidate) => candidate.requested)) {
+      if (used + item.characters <= budget) {
+        item.included = true;
+        used += item.characters;
+      }
+    }
     for (const kind of ['canon', 'planning'] as const) {
+      if (ranked.some((candidate) => candidate.kind === kind && candidate.included)) continue;
       const item = ranked.find((candidate) => candidate.kind === kind && !candidate.included);
       if (item && used + item.characters <= budget) {
         item.included = true;
@@ -128,6 +151,10 @@ export class ContextAssembler {
         used += item.characters;
       }
     }
-    return { id: uid('context'), task: input.task, createdAt: now(), budget, characters: used, items: candidates.map(({ score: _score, fixed: _fixed, essential: _essential, ...item }) => item), gaps: state.facts.length ? [] : ['尚未建立结构化故事事实；Agent 需区分正文证据与推断'] };
+    const gaps = state.facts.length ? [] : ['尚未建立结构化故事事实；Agent 需区分正文证据与推断'];
+    for (const item of ranked.filter((candidate) => candidate.requested && !candidate.included)) {
+      gaps.push(`任务明确引用的 ${item.source} 未能纳入上下文预算，请调整资料选择或缩小任务范围。`);
+    }
+    return { id: uid('context'), task: input.task, createdAt: now(), budget, characters: used, items: candidates.map(({ score: _score, fixed: _fixed, essential: _essential, requested: _requested, ...item }) => item), gaps };
   }
 }

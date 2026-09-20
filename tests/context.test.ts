@@ -10,6 +10,48 @@ const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe('任务上下文中的研究资料', () => {
+  it('优先纳入任务点名的章节范围和当前计划，不被旧规划与长工作台历史挤掉', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'novel-context-explicit-range-'));
+    roots.push(root);
+    const project = new ProjectService('context-explicit-range');
+    await project.create({ root, title: '续写资料选择', kind: 'novel' });
+    await project.writeFile('planning/滚动规划.md', '历史快照。\n' + '人物计划和当前情节。'.repeat(400));
+    await project.writeFile('planning/current-plan.md', '这里是目前有效的计划，旧规划仅供追溯。');
+    for (let chapter = 23; chapter <= 26; chapter += 1) {
+      await project.writeFile(`manuscript/第${chapter}章.md`, chapter === 26 ? '# 第26章' : `# 第${chapter}章\n${'相邻场景人物行动。'.repeat(330)}`);
+    }
+    const timestamp = '2026-09-20T00:00:00.000Z';
+    const comment: ObserverComment = {
+      id: 'large-open-comment', issueType: '衔接', severity: 'suggestion', summary: '尚待处理的历史问题。'.repeat(1700), evidence: '正文', suggestedAction: '结合具体场景判断', status: 'open', reviewCount: 0,
+      anchor: { filePath: 'manuscript/第一章.md', start: 0, end: 1, quote: '#', prefix: '', suffix: '', snapshotId: 'snapshot', snapshotHash: 'hash' },
+      messages: [], createdAt: timestamp, updatedAt: timestamp
+    };
+    await project.eventStore.append('comment.created', comment as never, 'observer');
+    const pack = await new ContextAssembler(project).build({ task: '续写第26章，先阅读第23—25章和 planning/current-plan.md。', filePath: 'manuscript/第26章.md', content: '# 第26章', budget: 28_000 });
+    for (const source of ['manuscript/第23章.md', 'manuscript/第24章.md', 'manuscript/第25章.md', 'planning/current-plan.md']) {
+      expect(pack.items.find((item) => item.source === source)).toMatchObject({ included: true, reason: expect.stringContaining('本次任务明确引用') });
+    }
+    expect(pack.characters).toBeLessThanOrEqual(pack.budget);
+  });
+
+  it('引用远处资料时优先选择，并在预算不足时明确列出未纳入的引用', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'novel-context-explicit-gap-'));
+    roots.push(root);
+    const project = new ProjectService('context-explicit-gap');
+    await project.create({ root, title: '引用预算', kind: 'novel' });
+    await project.writeFile('research/人物原型.txt', '原型访谈。'.repeat(350));
+    await project.writeFile('manuscript/第101章.md', '最后一次会面。'.repeat(500));
+    const assembler = new ContextAssembler(project);
+    const enough = await assembler.build({ task: '对照 research/人物原型.txt 和第101章，检查当前人物动机。', filePath: 'manuscript/第200章.md', content: '# 第200章', budget: 12_000 });
+    expect(enough.items.find((item) => item.source === 'research/人物原型.txt')?.included).toBe(true);
+    expect(enough.items.find((item) => item.source === 'manuscript/第101章.md')?.included).toBe(true);
+    const limited = await assembler.build({ task: enough.task, filePath: 'manuscript/第200章.md', content: '# 第200章\n' + '当前正文'.repeat(850), budget: 4_000 });
+    expect(limited.items.find((item) => item.kind === 'current-buffer')?.included).toBe(true);
+    expect(limited.gaps.some((gap) => gap.includes('research/人物原型.txt') && gap.includes('预算'))).toBe(true);
+    expect(limited.gaps.some((gap) => gap.includes('manuscript/第101章.md') && gap.includes('预算'))).toBe(true);
+    expect(limited.characters).toBeLessThanOrEqual(limited.budget);
+  });
+
   it('把旧评论的新理由连同适用范围带入后续 Agent 上下文', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-context-feedback-'));
     roots.push(root);
