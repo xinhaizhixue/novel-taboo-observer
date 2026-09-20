@@ -20,6 +20,7 @@ import { addReviewReferences, buildReviewBundle, finishReview, pendingReview, va
 import type { ReviewReport } from '../../../src/shared/types.js';
 import { signalAgent } from './terminate.js';
 import { withDeadline } from '../shutdown.js';
+import { normalizeReviewQuotes } from '../review-quotes.js';
 
 interface ActiveTask {
   cancellation?: Promise<void>;
@@ -190,6 +191,7 @@ export class AgentHub {
   }
 
   async runObserver(input: ObserverRunRequest) {
+    input = { ...input, quoteNormalizations: [] };
     if (input.sourceWriterTaskId) {
       const writer = await this.record(input.sourceWriterTaskId);
       if (writer?.role === 'writer') input = { ...input, writingRequirements: `${writer.objective}\n完成条件：${writer.completionCriteria.join('；')}`, writingComparison: await this.writerComparison(writer) };
@@ -270,7 +272,11 @@ export class AgentHub {
     this.emit({ taskId: id, type: 'state', at: now(), payload: { state: 'running', role: input.role } });
     const completed = run.completed.then(async (first) => {
       if (!twoPass || first.exitCode !== 0 || record.state === 'cancelled') return first;
-      const reading = parseObject(first.finalMessage) as unknown as import('../../../src/shared/types.js').ColdReading;
+      const originalReading = parseObject(first.finalMessage);
+      await writeJson(path.join(directory, 'cold-reading-original.json'), originalReading);
+      const normalizedReading = normalizeReviewQuotes(originalReading, observer.bundle!.sources, 'reading');
+      const reading = normalizedReading.value as unknown as import('../../../src/shared/types.js').ColdReading;
+      observer.quoteNormalizations = normalizedReading.normalizations;
       for (const source of observer.bundle!.sources) {
         const rows = reading.readings?.filter(row => row.filePath === source.filePath);
         if (rows?.length !== 1 || !rows[0].quote?.trim() || !source.content.includes(rows[0].quote) || !rows[0].understanding?.trim() || !Array.isArray(rows[0].frictions) || rows[0].frictions.some(item => !item.quote?.trim() || !source.content.includes(item.quote) || !item.difficulty?.trim() || !item.suggestion?.trim())) throw new Error('第一遍正文阅读记录缺失或引文不匹配，不能宣布审查完成。');
@@ -414,7 +420,7 @@ export class AgentHub {
   }
 
   private async acceptObserverResult(input: ObserverRunRequest, message: string, taskId: string, baselineHashes: Record<string, string>) {
-    const parsed = parseObject(message);
+    let parsed = parseObject(message);
     if (input.mode === 'explain' && input.commentId) {
       const state = await this.project.state();
       const original = state.comments.find((item) => item.id === input.commentId);
@@ -426,6 +432,9 @@ export class AgentHub {
       return;
     }
     await addReviewReferences(this.project, input.bundle!, parsed, baselineHashes);
+    const normalizedQuotes = normalizeReviewQuotes(parsed, input.bundle!.sources, 'context');
+    parsed = normalizedQuotes.value;
+    input.quoteNormalizations = [...(input.quoteNormalizations ?? []), ...normalizedQuotes.normalizations];
     const proposed = Array.isArray(parsed.comments) ? parsed.comments as Array<Record<string, unknown>> : [];
     const timestamp = now();
     const created: ObserverComment[] = [];

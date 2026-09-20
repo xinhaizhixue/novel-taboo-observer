@@ -352,7 +352,10 @@ export interface AgentRunRequest {
 
 export interface ColdReading { readings: Array<{ filePath: string; quote: string; understanding: string; dialogueChecks?: Array<{quote: string; intendedAction: string; basis: string; priorEvidence: string}>; frictions: Array<{ quote: string; difficulty: string; suggestion: string }> }> }
 
+export interface ReviewQuoteNormalization { filePath: string; originalQuote: string; quote: string; phase: 'reading' | 'context' }
+
 export interface ObserverRunRequest {
+  quoteNormalizations?: ReviewQuoteNormalization[];
   coldReading?: ColdReading;
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
@@ -449,6 +452,7 @@ export interface ReviewBundle {
   gaps: string[];
 }
 export interface ReviewReport {
+  quoteNormalizations?: ReviewQuoteNormalization[];
   coldResolutions?: Array<{ filePath: string; quote: string; decision: string; reason: string }>;
   coldReading?: ColdReading;
   writingRequirements?: string;

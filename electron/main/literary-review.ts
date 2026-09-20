@@ -39,7 +39,7 @@ export async function buildReviewBundle(project: ProjectService, input: Observer
 
 export function pendingReview(input: ObserverRunRequest, taskId: string): ReviewReport {
   const bundle = input.bundle!;
-  return { protocolVersion: 3, coldReading: input.coldReading, chapterReadings: [], id: input.reportId!, taskId, scope: bundle.scope, status: 'running', primaryFile: input.snapshot.filePath, createdAt: input.snapshot.createdAt, summary: '正在逐项审阅；尚无结论。', sources: bundle.sources.map(({ filePath, hash, referenceOnly }) => ({ filePath, hash, referenceOnly })), omittedPaths: bundle.omittedPaths, gaps: [...bundle.gaps], assessments: [], commentIds: [], unanchored: [], sourceWriterTaskId: input.sourceWriterTaskId, writingRequirements: input.writingRequirements };
+  return { protocolVersion: 3, coldReading: input.coldReading, quoteNormalizations: input.quoteNormalizations, chapterReadings: [], id: input.reportId!, taskId, scope: bundle.scope, status: 'running', primaryFile: input.snapshot.filePath, createdAt: input.snapshot.createdAt, summary: '正在逐项审阅；尚无结论。', sources: bundle.sources.map(({ filePath, hash, referenceOnly }) => ({ filePath, hash, referenceOnly })), omittedPaths: bundle.omittedPaths, gaps: [...bundle.gaps], assessments: [], commentIds: [], unanchored: [], sourceWriterTaskId: input.sourceWriterTaskId, writingRequirements: input.writingRequirements };
 }
 
 /** Treat the model's coverage claims as untrusted: validate every quoted source. */

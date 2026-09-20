@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -8,7 +8,7 @@ import { AuthorProfileStore } from '../electron/main/profile.js';
 import type { AgentAdapter, AdapterRunOptions, AdapterRunResult } from '../electron/main/agents/adapter.js';
 const roots:string[]=[];
 afterEach(async()=>{await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
-async function setup(invalid=false, hold=false) {
+async function setup(invalid=false, hold=false, wrapped=false) {
  const root=await mkdtemp(path.join(os.tmpdir(),'two-pass-'));roots.push(root);
  const project=new ProjectService('two-pass');await project.create({root:path.join(root,'novel'),title:'样本',kind:'novel'});
  const file=await project.readFile('manuscript/第一章.md');
@@ -16,7 +16,8 @@ async function setup(invalid=false, hold=false) {
  const adapter:AgentAdapter={id:'claude',info:async()=>({id:'claude',name:'test',available:true,command:'test',capabilities:{} as never}),run:options=>{
    calls.push(options);let resolve!:(r:Awaited<AdapterRunResult['completed']>)=>void;
    const completed=new Promise<Awaited<AdapterRunResult['completed']>>(r=>resolve=r);
-   const output=options.pureText ? {readings:[{filePath:file.path,quote:invalid?'不存在的句子':file.content,understanding:'只根据正文阅读',frictions:[]}]} : {summary:'第二遍完成',comments:[],reviewResult:'not-applicable'};
+   const originalQuote=invalid?'不存在的句子':file.content;
+   const output=options.pureText ? {readings:[{filePath:file.path,quote:wrapped?`“${originalQuote}”`:originalQuote,understanding:'只根据正文阅读',frictions:[]}]} : {summary:'第二遍完成',comments:[],reviewResult:'not-applicable'};
    if(!hold)resolve({finalMessage:JSON.stringify(output),exitCode:0,raw:[]});
    return {completed,process:{kill:()=>{resolve({finalMessage:'',exitCode:143,raw:[]});return true;}} as never};
  }};
@@ -32,6 +33,20 @@ it('第一遍不收到写作意图、在独立目录运行，第二遍收到已�
 });
 it('第一遍伪造引文时失败，不能继续第二遍或宣称通过',async()=>{
  const {hub,task,calls}=await setup(true);await hub.waitForTask(task.id);expect(calls).toHaveLength(1);expect((await hub.record(task.id))?.state).toBe('failed');
+});
+it('展示引号逐字核对后继续第二遍，原始输出和格式处理记录均保留',async()=>{
+ const {hub,task,project,calls}=await setup(false,false,true);await hub.waitForTask(task.id);
+ expect(calls).toHaveLength(2);
+ const file=await project.readFile('manuscript/第一章.md');
+ const report=(await project.state()).reviews?.[0];
+ expect(report?.coldReading?.readings[0].quote).toBe(file.content);
+ expect(report?.quoteNormalizations).toEqual([{filePath:file.path,originalQuote:`“${file.content}”`,quote:file.content,phase:'reading'}]);
+ const original=JSON.parse(await readFile(path.join(path.dirname(calls[0].outputPath),'cold-reading-original.json'),'utf8'));
+ expect(original.readings[0].quote).toBe(`“${file.content}”`);
+});
+it('展示引号内部没有逐字来源时仍拒绝，不启动第二遍',async()=>{
+ const {hub,task,calls}=await setup(true,false,true);await hub.waitForTask(task.id);
+ expect(calls).toHaveLength(1);expect((await hub.record(task.id))?.state).toBe('failed');
 });
 it('取消第一遍后不启动第二遍',async()=>{
  const {hub,task,calls}=await setup(false,true);await hub.cancel(task.id);expect(calls).toHaveLength(1);expect((await hub.record(task.id))?.state).toBe('cancelled');

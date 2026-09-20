@@ -7,6 +7,7 @@ import { addReviewReferences, automaticReviewTargets, buildReviewBundle, finishR
 import { hashText } from '../electron/main/utils.js';
 import { REVIEW_DIMENSIONS } from '../src/shared/constants.js';
 import type { ObserverRunRequest } from '../src/shared/types.js';
+import { normalizeReviewQuotes } from '../electron/main/review-quotes.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 async function fixture() {
@@ -25,6 +26,21 @@ function completeAssessments(input: ObserverRunRequest) {
   return Object.keys(REVIEW_DIMENSIONS).map((dimension) => ({ dimension, status: 'clear', finding: '已检查此段动作与回应。', evidence: [{ filePath: input.snapshot.filePath, quote: '门外的街道空了。' }, { filePath: input.bundle!.sources[0].filePath, quote: '她把杯子放下。' }] }));
 }
 describe('有证据的文学审阅', () => {
+  it('格式处理后的证据仍须通过完整六项、逐章与错章校验', async () => {
+    const { input, bundle } = await fixture();
+    const report = pendingReview(input, 'quoted-evidence');
+    const parsed = {
+      comments: [],
+      assessments: completeAssessments(input).map((row) => ({ ...row, evidence: row.evidence.map((item) => ({ ...item, quote: `“${item.quote}”` })) })),
+      chapterReadings: chapterReadings(input).map((row) => ({ ...row, evidence: row.evidence.map((item) => ({ ...item, quote: `“${item.quote}”` })) }))
+    };
+    expect(finishReview(report, bundle, parsed, [], []).status).toBe('incomplete');
+    const normalized = normalizeReviewQuotes(parsed, bundle.sources, 'context');
+    expect(normalized.normalizations.length).toBeGreaterThan(0);
+    expect(finishReview(report, bundle, normalized.value, [], []).status).toBe('clear');
+    parsed.chapterReadings[1].evidence[0].filePath = parsed.chapterReadings[0].filePath;
+    expect(finishReview(report, bundle, normalizeReviewQuotes(parsed, bundle.sources, 'context').value, [], []).status).toBe('incomplete');
+  });
   it('混合中文数字章节按自然顺序读取连续五章全文，不把后一章误纳入', async () => {
     const { bundle } = await fixture();
     expect(bundle.sources.map((source) => source.filePath)).toEqual(['manuscript/第一章.md', 'manuscript/第2章.md', 'manuscript/第三章.md', 'manuscript/第4章.md', 'manuscript/第五章.md']);
