@@ -328,7 +328,8 @@ export default function App() {
     }
     const adapter = agents.find((item) => item.id === observerAdapter && item.available)?.id;
     if (!adapter) { setNotice({ kind: 'error', text: `选定的 ${agents.find(item => item.id === observerAdapter)?.name || observerAdapter} 当前不可用，请重新检测或明确选择其他 Agent。` }); return; }
-    setObserverRunning(true); setObserverTaskId(null); setObserverError(null); setRightOpen(true); setRightTab('comments');
+    setObserverRunning(true); setObserverTaskId(null); setObserverError(null);
+    if (mode !== 'automatic') { setRightOpen(true); setRightTab('comments'); }
     try {
       const hash = await sha256(buffer.content);
       const selection = editorRef.current?.state.selection.main;
@@ -356,7 +357,9 @@ export default function App() {
 
   useEffect(() => {
     if (!observer.active || observerRunning || writerOwnsCurrentBuffer || !buffer || settings.observer.mode === 'manual') return;
-    const changed = Math.abs(characters(buffer.content) - characters(lastAnalyzed.current));
+    const currentCharacters = characters(buffer.content);
+    if (currentCharacters < 30) return;
+    const changed = Math.abs(currentCharacters - characters(lastAnalyzed.current));
     const completedParagraph = changed >= 30 && /\n\s*\n\s*$/.test(buffer.content);
     if (changed < settings.observer.changedCharacters && !completedParagraph) return;
     const wait = Math.max(settings.observer.idleMs, settings.observer.minimumIntervalMs - (Date.now() - lastAnalysisAt.current));
