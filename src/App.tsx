@@ -339,7 +339,8 @@ export default function App() {
       const pack = await api.createContextPack({ task: question || '逐项精读文字连贯、对话承接、语言自然度、主角选择、节奏与事实连续性', filePath: buffer.path, content: buffer.content });
       setContextPack(pack);
       const task = await api.runObserver({ adapterId: adapter, snapshot, contextPack: pack, mode, commentId, question });
-      setObserverTaskId(task.id);
+      setObserverTaskId(task.state === 'running' ? task.id : null);
+      setObserverRunning(task.state === 'running');
       setObserver(await api.observerSession('status'));
       lastAnalyzed.current = buffer.content; lastAnalysisAt.current = Date.now();
     } catch (error) { setObserverRunning(false); setObserverTaskId(null); setNotice({ kind: 'error', text: errorMessage(error) }); }
@@ -354,14 +355,14 @@ export default function App() {
 
 
   useEffect(() => {
-    if (!observer.active || observerRunning || !buffer || settings.observer.mode === 'manual') return;
+    if (!observer.active || observerRunning || writerOwnsCurrentBuffer || !buffer || settings.observer.mode === 'manual') return;
     const changed = Math.abs(characters(buffer.content) - characters(lastAnalyzed.current));
     const completedParagraph = changed >= 30 && /\n\s*\n\s*$/.test(buffer.content);
     if (changed < settings.observer.changedCharacters && !completedParagraph) return;
     const wait = Math.max(settings.observer.idleMs, settings.observer.minimumIntervalMs - (Date.now() - lastAnalysisAt.current));
     const timer = window.setTimeout(() => void analyze('automatic'), wait);
     return () => window.clearTimeout(timer);
-  }, [analyze, buffer?.content, observer.active, observerRunning, settings.observer.changedCharacters, settings.observer.idleMs, settings.observer.minimumIntervalMs, settings.observer.mode]);
+  }, [analyze, buffer?.content, observer.active, observerRunning, writerOwnsCurrentBuffer, settings.observer.changedCharacters, settings.observer.idleMs, settings.observer.minimumIntervalMs, settings.observer.mode]);
 
   const toggleObserver = async () => {
     const next = await api.observerSession(observer.active ? 'stop' : 'start');

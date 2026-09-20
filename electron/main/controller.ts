@@ -206,6 +206,10 @@ export class WorkbenchController {
       runObserver: async (input) => {
         if (input.mode === 'automatic') {
           if (!this.observer.active) throw new Error('Observer 会话未开启');
+          const state = await this.project.state();
+          const existing = [...(state.reviews ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).find((report) => report.protocolVersion === 3 && !report.stale && state.agentTasks.some((record) => record.id === report.taskId && record.role === 'observer') && report.sources.some((source) => !source.referenceOnly && source.filePath === input.snapshot.filePath && source.hash === input.snapshot.hash));
+          const task = existing && state.agentTasks.find((record) => record.id === existing.taskId);
+          if (task) return task;
           if (this.observer.count >= this.observer.budget) throw new Error('Observer 自动分析已达到本会话软预算，请确认继续或切换手动模式');
           this.observer.count += 1;
         }

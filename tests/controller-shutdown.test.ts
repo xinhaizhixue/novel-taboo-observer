@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const handlers = vi.hoisted(() => new Map<string, (...args: any[]) => any>());
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] }, ipcMain: { handle: (name: string, fn: (...args: any[]) => any) => handlers.set(name, fn) }, clipboard: {}, dialog: {}, shell: {} }));
 import { WorkbenchController } from '../electron/main/controller.js';
+import type { AgentTaskRecord, ReviewReport } from '../src/shared/types.js';
 const roots: string[] = [];
 afterEach(async () => { handlers.clear(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 async function fixture() {
@@ -44,6 +45,28 @@ describe('关闭时保护正文与释放资源', () => {
 });
 
 describe('Writer 完成后的后台审阅', () => {
+  it.each(['clear', 'findings', 'incomplete', 'cancelled'] as const)('随编辑自动检查不会重复消费同一版本已有的 %s 报告，手动复查仍可执行', async (status) => {
+    const { controller } = await fixture();
+    const file = await controller.project.readFile('manuscript/第一章.md');
+    const prior: AgentTaskRecord = { id: 'review-existing-task', adapterId: 'claude', role: 'observer', state: status === 'cancelled' ? 'cancelled' : 'completed', objective: '联合审阅', scope: [file.path], completionCriteria: [], startedAt: new Date().toISOString(), startHashes: {}, changedFiles: [] };
+    const report: ReviewReport = { id: 'review-existing-report', taskId: prior.id, scope: 'sequence', protocolVersion: 3, status, primaryFile: file.path, createdAt: prior.startedAt, summary: '已有检查结果', sources: [{ filePath: file.path, hash: file.hash }], omittedPaths: [], gaps: status === 'incomplete' ? ['缺少一项证据'] : [], assessments: [], commentIds: [], unanchored: [] };
+    await controller.project.eventStore.append('agent.task', prior as never, 'observer');
+    await controller.project.eventStore.append('review.report', report as never, 'observer');
+    const run = vi.spyOn(controller.hub, 'runObserver').mockResolvedValue({ ...prior, id: 'new-review-task', state: 'running' });
+    await handlers.get('workbench:observerSession')!({}, 'start');
+    const input = { adapterId: 'claude', mode: 'automatic', snapshot: { id: 'snapshot', filePath: file.path, content: file.content, hash: file.hash, editorVersion: 1, createdAt: prior.startedAt } };
+    expect((await handlers.get('workbench:runObserver')!({}, input)).id).toBe(prior.id);
+    expect(run).not.toHaveBeenCalled();
+    expect((await handlers.get('workbench:observerSession')!({}, 'status')).count).toBe(0);
+    expect((await handlers.get('workbench:runObserver')!({}, { ...input, mode: 'manual' })).id).toBe('new-review-task');
+    expect(run).toHaveBeenCalledTimes(1);
+    await controller.project.writeFile(file.path, file.content + '\n新的实际改稿。');
+    const changed = await controller.project.readFile(file.path);
+    await handlers.get('workbench:runObserver')!({}, { ...input, snapshot: { ...input.snapshot, content: changed.content, hash: changed.hash } });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect((await handlers.get('workbench:observerSession')!({}, 'status')).count).toBe(1);
+  });
+
   it('按 Writer 实际改动文件发起，和当前编辑器及 Observer 开关无关', async () => {
     const { controller } = await fixture();
     await controller.project.writeFile('manuscript/第2章.md', '# 第2章\n新的动作。');
