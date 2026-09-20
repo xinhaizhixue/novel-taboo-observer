@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { currentTaskForAgent, suggestedObjectiveForAgent, taskObjectiveForAgent } from '../src/lib/agent-task.js';
+import { currentTaskForAgent, suggestedObjectiveForAgent, suggestedWriterScope, taskObjectiveForAgent } from '../src/lib/agent-task.js';
 import type { CreativeTask } from '../src/shared/types.js';
 
 const base: CreativeTask = {
@@ -30,6 +30,9 @@ describe('Agent复用正式创作任务', () => {
     expect(suggestedObjectiveForAgent([task], '', 'writer', 'manuscript/第29章.md')).toBe(task.title);
     expect(suggestedObjectiveForAgent([task], '', 'writer', 'manuscript/第26章.md')).toBe('继续完善第26章');
     expect(suggestedObjectiveForAgent([{ ...task, title: '参考第27—29章，续写第30章' }], '', 'writer', 'manuscript/第27章.md')).toBe('继续完善第27章');
+    expect(suggestedWriterScope([task], task.title, task.links)).toEqual(['manuscript/第27章.md', 'manuscript/第28章.md', 'manuscript/第29章.md']);
+    expect(suggestedWriterScope([{ ...task, status: 'completed' }], task.title, task.links)).toEqual([]);
+    expect(suggestedWriterScope([task], '自由填写的其他任务', task.links)).toEqual([]);
   });
 
   it('Writer目标与当前写作任务同名时复用原任务和完整完成条件', () => {

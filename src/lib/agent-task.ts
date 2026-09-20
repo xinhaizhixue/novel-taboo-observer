@@ -35,6 +35,12 @@ function taskNamesFile(title: string, stem: string) {
   return number >= Math.min(Number(range[1]), Number(range[2])) && number <= Math.max(Number(range[1]), Number(range[2]));
 }
 
+export function suggestedWriterScope(tasks: CreativeTask[], objective: string, manuscriptPaths: string[]) {
+  const task = currentTaskForAgent(tasks, 'writer', objective);
+  if (!task) return [];
+  return task.links.filter((filePath) => manuscriptPaths.includes(filePath) && taskNamesFile(task.title, pathStem(filePath)));
+}
+
 /**
  * Keep the Agent composer aligned with the file the author is actually viewing.
  * A global continue-card focus can point at the next chapter while Writer is still
