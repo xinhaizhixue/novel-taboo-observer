@@ -1,6 +1,6 @@
 {
   "name": "novel-observer",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "以 Git 仓库承载作品、桥接通用 Agent 的本地长篇网文写作工作台",
   "author": "Novel Observer contributors",

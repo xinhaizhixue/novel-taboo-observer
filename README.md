@@ -27,7 +27,9 @@
 
 ## 下载桌面版
 
-在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.2 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
+在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.3 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
+
+任务中明确引用的文件和章节范围会优先进入上下文，预算不足时列出未纳入的资料。重新打开项目后，中断的审阅会显示未完成原因；Claude Code 的分析和公开消息进度也会显示在会话面板中。
 
 ## 开发运行
 
