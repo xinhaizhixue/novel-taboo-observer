@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS } from './shared/constants';
+import { auditPlanning, hasDraftedChapter, STORY_PLAN_TEMPLATE, storyPlanPath } from './shared/planning-audit';
 import type {
   AgentAdapterInfo, AgentTaskRecord, AuthorProfile, CreativeTask, EventSource, FileReadResult, Goal, JsonValue,
   NavigationProposal, NovelEvent, ObserverComment, ProjectFile, ProjectState, Settings, StoryFact, TrashEntry, WorkbenchApi
@@ -70,7 +71,7 @@ function seed() {
   const agentTasks: AgentTaskRecord[] = [{ id: 'agent-writer-demo', adapterId: 'codex', role: 'writer', state: 'completed', objective: '补强开篇的雨夜氛围', scope: [chapterPath], completionCriteria: ['保留人物知识边界'], sessionId: 'browser-preview-session', startedAt: timestamp, endedAt: timestamp, startHashes: { [chapterPath]: hash(chapter) }, changedFiles: [chapterPath], finalMessage: '已补强雨夜氛围，未改动正典。' }];
   const state: ProjectState = {
     root: 'browser-preview://雾城来信', manifest: { schemaVersion: 1, projectId: 'browser-preview', title: '雾城来信', kind: 'novel', language: 'zh-CN', createdAt: timestamp, updatedAt: timestamp, targetCharacters: 1_000_000, gitPolicy: 'author-checkpoints', activeWorkId: 'work-1', works: [{ id: 'work-1', title: '雾城来信', manuscriptRoot: 'manuscript', status: 'serializing' }] },
-    files: [...files].map(([path, content]) => file(path, categoryForPath(path), content)), goals: [goal], tasks: [taskNow, taskNext], comments: [warning, blocking], facts, proposals: [proposal], agentTasks, dataWarnings: [], manuscriptStats: { totalCharacters: chapter.replace(/\s/g, '').length, targetCharacters: 1_000_000, chapterCount: 1, progress: chapter.replace(/\s/g, '').length / 1_000_000 },
+    files: [...files].map(([path, content]) => file(path, categoryForPath(path), content)), goals: [goal], tasks: [taskNow, taskNext], comments: [warning, blocking], facts, proposals: [proposal], agentTasks, dataWarnings: [], manuscriptStats: { totalCharacters: chapter.replace(/\s/g, '').length, targetCharacters: 1_000_000, chapterCount: 1, draftedChapterCount: 1, progress: chapter.replace(/\s/g, '').length / 1_000_000 }, planningAudit: auditPlanning([...files].map(([path, content]) => ({ path, content }))),
     continueCard: { location: '雾城来信 · 第一章', stage: '逐章创作、观察和修订', lastFile: chapterPath, goal, focus: taskNow.title, next: [taskNow, taskNext], blockers: [], importantComments: [warning, blocking] },
     git: { branch: 'main', ahead: 0, behind: 0, clean: false, files: [{ path: chapterPath, index: ' ', workingTree: 'M', category: 'manuscript', origin: 'agent' }, { path: '.novel/events/2026-08/session-demo.jsonl', index: '?', workingTree: '?', category: 'system', origin: 'unknown' }] }
   };
@@ -94,14 +95,16 @@ export function createBrowserWorkbench(): WorkbenchApi {
     project.continueCard.blockers = project.tasks.filter((item) => item.status === 'blocked');
     project.continueCard.importantComments = project.comments.filter((item) => item.status === 'open' && item.severity !== 'suggestion');
     const manuscript = [...seeded.files].filter(([path]) => path.startsWith('manuscript/')).map(([, content]) => content);
-    project.manuscriptStats = { totalCharacters: manuscript.reduce((sum, content) => sum + content.replace(/\s/g, '').length, 0), targetCharacters: project.manifest.targetCharacters || 1_000_000, chapterCount: manuscript.length, progress: 0 };
+    const drafted = manuscript.filter(hasDraftedChapter);
+    project.manuscriptStats = { totalCharacters: drafted.reduce((sum, content) => sum + content.replace(/\s/g, '').length, 0), targetCharacters: project.manifest.targetCharacters || 1_000_000, chapterCount: manuscript.length, draftedChapterCount: drafted.length, progress: 0 };
     project.manuscriptStats.progress = Math.min(1, project.manuscriptStats.totalCharacters / project.manuscriptStats.targetCharacters);
+    project.planningAudit = auditPlanning([...seeded.files].map(([path, content]) => ({ path, content })));
   };
   const read = (path: string): FileReadResult => { const content = seeded.files.get(path); if (content === undefined) throw new Error(`演示文件不存在：${path}`); return { path, content, hash: hash(content), modifiedAt: timestamp, size: content.length }; };
   return {
     platform: 'browser' as NodeJS.Platform,
     chooseProject: async () => null,
-    createProject: async (input) => { project = { ...project, root: `browser-preview://${input.title}`, manifest: { ...project.manifest, title: input.title, kind: input.kind, updatedAt: new Date().toISOString() } }; return clone(project); },
+    createProject: async (input) => { project = { ...project, root: `browser-preview://${input.title}`, manifest: { ...project.manifest, title: input.title, kind: input.kind, updatedAt: new Date().toISOString() } }; seeded.files.set(storyPlanPath(project.manifest), STORY_PLAN_TEMPLATE); project.files = [...seeded.files].map(([path, content]) => file(path, categoryForPath(path), content)); sync(); return clone(project); },
     openProject: async () => clone(project), addWork: async () => clone(project), activateWork: async () => clone(project), refreshProject: async () => { sync(); return clone(project); },
     readFile: async (path) => read(path),
     searchProject: async (query) => [...seeded.files].flatMap(([path, content]) => content.split('\n').map((line, index) => ({ path, line: index + 1, excerpt: line })).filter((item) => item.excerpt.toLowerCase().includes(query.toLowerCase()))).slice(0, 100),

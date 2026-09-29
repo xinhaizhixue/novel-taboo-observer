@@ -133,7 +133,10 @@ describe('作者编辑与 Agent 修改的归因', () => {
     await project.addWork('系列第二部');
     runs[0].finish();
     await settled(hub);
-    expect(await hub.record(task.id)).toMatchObject({ state: 'completed', changedFiles: [], concurrentAuthorFiles: ['manuscript/work-2/第一章.md'] });
+    const record = await hub.record(task.id);
+    expect(record).toMatchObject({ state: 'completed', changedFiles: [] });
+    expect(record?.concurrentAuthorFiles).toContain('manuscript/work-2/第一章.md');
+    expect(record?.concurrentAuthorFiles?.some((file) => file.startsWith('planning/') && file.endsWith('/全书路线.md'))).toBe(true);
   });
 });
 

@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import fg from 'fast-glob';
 import { DATA_VERSION, MANIFEST_PATH, PROJECT_FOLDERS, SUPPORTED_TEXT_EXTENSIONS } from '../../src/shared/constants.js';
+import { auditPlanning, hasDraftedChapter, STORY_PLAN_TEMPLATE, storyPlanPath } from '../../src/shared/planning-audit.js';
 import { compareNaturalPath } from '../../src/shared/natural-sort.js';
 import type { AgentTaskRecord, AuthorProfile, ContinueCard, CreativeTask, GitPolicy, Goal, NavigationProposal, NovelEvent, ObserverComment, ProjectFile, ProjectManifest, ProjectState, StoryFact } from '../../src/shared/types.js';
 import { relocateComment } from './observer.js';
@@ -128,6 +129,7 @@ export class ProjectService {
     await atomicWrite(path.join(root, firstChapter), `# 第一章\n\n${input.idea ? `<!-- 创作灵感：${input.idea.replaceAll('-->', '—>')} -->\n\n` : ''}`);
     await atomicWrite(path.join(root, 'canon', '故事正典.md'), '# 故事正典\n\n> AI 推断与建议不得自动升级为作者确认。\n\n## 人物\n\n## 世界规则\n\n## 时间线\n\n## 知识边界\n\n## 伏笔与承诺\n');
     await atomicWrite(path.join(root, 'planning', '滚动规划.md'), `# ${manifest.title} · 滚动规划\n\n## 全书方向与结局假设\n\n${input.idea || '待探索'}\n\n## 当前卷骨架\n\n## 未来一至三章\n`);
+    await atomicWrite(path.join(root, storyPlanPath(manifest)), STORY_PLAN_TEMPLATE);
     await atomicWrite(path.join(root, 'research', 'README.md'), '# 研究资料\n\nResearcher 可以在任务授权范围内写入这里。区分来源事实、合理推断和待核实问题；研究资料不会自动升级为作品正典。\n');
     await atomicWrite(path.join(root, 'decisions', 'README.md'), '# 已确认决定\n\n高影响创作决定写在这里，保留日期、理由和影响范围。\n');
     await atomicWrite(path.join(root, 'canon', '作品风格.md'), '# 作品风格与角色声音\n\n## 已确认规则\n\n## 候选规则（需作者确认）\n\n## 角色声音\n\n## 临时例外\n');
@@ -170,6 +172,7 @@ export class ProjectService {
     if (!existingTexts.length) {
       await atomicWrite(path.join(root, 'manuscript', '第一章.md'), '# 第一章\n\n');
       await atomicWrite(path.join(root, 'planning', '滚动规划.md'), `# ${manifest.title} · 滚动规划\n\n## 全书方向与结局假设\n\n待探索\n\n## 当前卷骨架\n\n## 未来一至三章\n`);
+      await atomicWrite(path.join(root, storyPlanPath(manifest)), STORY_PLAN_TEMPLATE);
       await atomicWrite(path.join(root, 'canon', '故事正典.md'), '# 故事正典\n\n> AI 推断与建议不得自动升级为作者确认。\n\n## 人物\n\n## 世界规则\n\n## 时间线\n\n## 知识边界\n\n## 伏笔与承诺\n');
     }
     await this.activate(root, manifest, openedDirty);
@@ -191,7 +194,9 @@ export class ProjectService {
     this.manifest = { ...this.activeManifest, activeWorkId: id, updatedAt: now(), works: [...this.activeManifest.works, work] };
     await writeJson(path.join(this.activeRoot, MANIFEST_PATH), this.manifest);
     await atomicWrite(path.join(this.activeRoot, manuscriptRoot, '第一章.md'), '# 第一章\n\n');
+    await atomicWrite(path.join(this.activeRoot, storyPlanPath(this.manifest)), STORY_PLAN_TEMPLATE);
     this.recordAuthorEdit(`${manuscriptRoot}/第一章.md`, hashText('# 第一章\n\n'));
+    this.recordAuthorEdit(storyPlanPath(this.manifest), hashText(STORY_PLAN_TEMPLATE));
     await this.eventStore.append('project.position', { filePath: `${manuscriptRoot}/第一章.md`, stage: '灵感与创作意图', focus: `为《${title}》确定可开书方向` }, 'system');
     return this.state();
   }
@@ -279,7 +284,7 @@ export class ProjectService {
   }
 
   async state(): Promise<ProjectState> {
-    const [{ files, manuscriptContents }, events, git] = await Promise.all([this.textSnapshot(), this.eventStore.all(), this.gitService.status()]);
+    const [{ files, manuscriptContents, planningDocuments }, events, git] = await Promise.all([this.textSnapshot(), this.eventStore.all(), this.gitService.status()]);
     const reduced = reduceEvents(events);
     const manuscriptPaths = files.filter((file) => file.category === 'manuscript').map((file) => file.path);
     const currentTexts = new Map(manuscriptPaths.map((file, index) => [file, manuscriptContents[index]]));
@@ -316,10 +321,13 @@ export class ProjectService {
     };
     const agentFiles = new Set(reduced.agentTasks.flatMap((task) => task.changedFiles));
     const attributedGit = { ...git, files: git.files.map((file) => ({ ...file, origin: this.openedDirty.has(file.path) ? 'pre-existing' as const : agentFiles.has(file.path) ? 'agent' as const : reduced.fileOrigins[file.path] ?? file.origin })) };
-    const totalCharacters = manuscriptContents.reduce((sum, content) => sum + content.replace(/\s/g, '').length, 0);
+    const draftedChapters = manuscriptContents.filter(hasDraftedChapter);
+    const totalCharacters = draftedChapters.reduce((sum, content) => sum + content.replace(/\s/g, '').length, 0);
     const targetCharacters = this.activeManifest.targetCharacters || 1_000_000;
-    const manuscriptStats = { totalCharacters, targetCharacters, chapterCount: manuscriptContents.length, progress: Math.min(1, totalCharacters / targetCharacters) };
-    return { root: this.activeRoot, manifest: this.activeManifest, files, ...reduced, dataWarnings: this.eventStore.diagnostics, manuscriptStats, continueCard: card, git: attributedGit };
+    const manuscriptStats = { totalCharacters, targetCharacters, chapterCount: manuscriptContents.length, draftedChapterCount: draftedChapters.length, progress: Math.min(1, totalCharacters / targetCharacters) };
+    const planningScope = this.activeManifest.kind === 'series' ? `planning/${this.activeManifest.activeWorkId || 'work-1'}/` : 'planning/';
+    const planningAudit = auditPlanning(planningDocuments.filter((doc) => this.activeManifest.kind !== 'series' || doc.path.startsWith(planningScope) || doc.path.startsWith(`canon/${this.activeManifest.activeWorkId || 'work-1'}/`)));
+    return { root: this.activeRoot, manifest: this.activeManifest, files, ...reduced, dataWarnings: this.eventStore.diagnostics, manuscriptStats, planningAudit, continueCard: card, git: attributedGit };
   }
 
   async files() {
@@ -351,7 +359,10 @@ export class ProjectService {
         const manuscriptContents = await Promise.all(files
           .filter((item) => item.category === 'manuscript')
           .map((item) => readFile(path.join(this.activeRoot, item.path), 'utf8')));
-        return { files, manuscriptContents };
+        const planningDocuments = await Promise.all(files
+          .filter((item) => item.category === 'planning' || item.category === 'canon')
+          .map(async (item) => ({ path: item.path, content: await readFile(path.join(this.activeRoot, item.path), 'utf8') })));
+        return { files, manuscriptContents, planningDocuments };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         lastMissing = error;

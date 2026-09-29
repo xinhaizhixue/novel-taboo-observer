@@ -328,9 +328,23 @@ export interface ProjectState {
   proposals: NavigationProposal[];
   agentTasks: AgentTaskRecord[];
   dataWarnings: string[];
-  manuscriptStats: { totalCharacters: number; targetCharacters: number; chapterCount: number; progress: number };
+  manuscriptStats: { totalCharacters: number; targetCharacters: number; chapterCount: number; draftedChapterCount: number; progress: number };
+  planningAudit: PlanningAudit;
   continueCard: ContinueCard;
   git: GitStatus;
+}
+
+export interface PlanningAuditItem {
+  key: 'promise' | 'growth' | 'world' | 'arcs' | 'ending' | 'current';
+  label: string;
+  question: string;
+  status: 'recorded' | 'skeleton' | 'missing';
+  sources: string[];
+}
+
+export interface PlanningAudit {
+  items: PlanningAuditItem[];
+  attention: PlanningAuditItem['key'][];
 }
 
 export interface FileReadResult { path: string; content: string; hash: string; modifiedAt: string; size: number }

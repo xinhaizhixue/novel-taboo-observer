@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProjectService } from '../electron/main/project.js';
+import { storyPlanPath } from '../src/shared/planning-audit.js';
 import { exec } from '../electron/main/utils.js';
 import type { AuthorProfile } from '../src/shared/types.js';
 
@@ -23,8 +24,9 @@ describe('可迁移作品仓库', () => {
     expect(state.manifest.title).toBe('雾城来信');
     expect(state.manifest.gitPolicy).toBe('author-checkpoints');
     expect(state.continueCard.next.length).toBeGreaterThan(0);
-    expect(state.manuscriptStats).toMatchObject({ targetCharacters: 1_000_000, chapterCount: 1 });
-    expect(state.manuscriptStats.totalCharacters).toBeGreaterThan(0);
+    expect(state.manuscriptStats).toMatchObject({ targetCharacters: 1_000_000, chapterCount: 1, draftedChapterCount: 0, totalCharacters: 0 });
+    expect(state.planningAudit.attention).toHaveLength(6);
+    expect(await readFile(path.join(root, 'planning', '全书路线.md'), 'utf8')).toContain('待定：主角会在哪些方面变强');
     expect(await readFile(path.join(root, 'manuscript', '第一章.md'), 'utf8')).toContain('创作灵感');
     expect(await readFile(path.join(root, 'research', 'README.md'), 'utf8')).toContain('不会自动升级为作品正典');
     const events = await readFile(path.join(root, '.novel', 'events', new Date().toISOString().slice(0, 7), 'session-test-session.jsonl'), 'utf8');
@@ -53,7 +55,8 @@ describe('可迁移作品仓库', () => {
     const state = await project.state();
     expect(state.manifest.targetCharacters).toBe(1_100_000);
     expect(state.manuscriptStats.chapterCount).toBe(2);
-    expect(state.manuscriptStats.totalCharacters).toBeGreaterThanOrEqual(10);
+    expect(state.manuscriptStats.draftedChapterCount).toBe(0);
+    expect(state.manuscriptStats.totalCharacters).toBe(0);
   });
 
   it('刷新期间正文被移走时用同一份新快照重建目录和字数', async () => {
@@ -71,7 +74,7 @@ describe('可迁移作品仓库', () => {
     const state = await project.state();
     expect(state.files.some((file) => file.path === 'manuscript/第二章.md')).toBe(false);
     expect(state.manuscriptStats.chapterCount).toBe(1);
-    expect(state.manuscriptStats.totalCharacters).toBeGreaterThan(0);
+    expect(state.manuscriptStats.totalCharacters).toBe(0);
   });
 
   it('换一个本机实例后可从 manifest 与事件重建关键状态', async () => {
@@ -203,12 +206,17 @@ describe('可迁移作品仓库', () => {
     const project = new ProjectService('series-session');
     let state = await project.create({ root, title: '雾城系列', kind: 'series', idea: '每本书追查同一场旧案。' });
     expect(state.continueCard.lastFile).toBe('manuscript/work-1/第一章.md');
+    await project.writeFile(storyPlanPath(state.manifest), '# 全书路线\n\n## 作品承诺\n第一部专注破解旧案背后的集体记忆谜题。\n');
+    state = await project.state();
+    expect(state.planningAudit.items.find((item) => item.key === 'promise')?.status).toBe('recorded');
     state = await project.addWork('第二部');
     expect(state.manifest.works).toHaveLength(2);
     expect(state.continueCard.lastFile).toBe('manuscript/work-2/第一章.md');
+    expect(state.planningAudit.items.find((item) => item.key === 'promise')?.status).toBe('missing');
     state = await project.activateWork('work-1');
     expect(state.manifest.activeWorkId).toBe('work-1');
     expect(state.continueCard.lastFile).toBe('manuscript/work-1/第一章.md');
+    expect(state.planningAudit.items.find((item) => item.key === 'promise')?.status).toBe('recorded');
   });
 
   it('位于另一个 Git 仓库下时仍初始化为独立小说仓库', async () => {

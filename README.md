@@ -10,7 +10,8 @@
 - 始终可达的作品中心：新建/打开仓库、查看本地路径/分支/remote、在 Finder 中显示；
 - 正文、大纲、研究、人物与世界、决定、嵌套目录和系列作品先做引用影响分析再移入可恢复回收站；整个仓库只移入 macOS 废纸篓；
 - 默认 5 秒智能自动保存、默认失焦保存、可调参数和仓库外崩溃恢复点；
-- 打开项目后的继续创作卡、目标、结构化任务编辑/取消原因、阻塞和九阶段创作旅程；
+- 打开项目后的继续创作卡、目标、结构化任务编辑/取消原因、阻塞和十阶段创作旅程；
+- 全书路线草案与持续规划提醒：逐项提示题材承诺、主角成长、世界或力量路线、分卷转折、终局和当前卷的记录缺口；Writer 启动前可选择补规划或显式探索式续写；
 - 从一句灵感启动 Navigator，生成可比较路线，作者确认后才进入目标与任务；
 - “我卡住了”诊断、路线效果/因果/代价/风险/后续影响展示，并可选用、组合、重推或拒绝；
 - Codex CLI、Claude Code 与 TraeX CLI 适配，支持桌面环境下发现 NVM 等路径中的 CLI；
@@ -22,12 +23,12 @@
 - 人物状态、时间线、知识边界、伏笔等最小故事记忆、全文筛选、证据状态和正典改动影响分析；
 - 任务相关上下文组装和“Agent 看到了什么”，作者可真实排除资料或补充本次临时说明；
 - 独立、可导入导出的作者风格档案，以及仓库内带状态的规则、候选与证据快照；只有已确认规则生效，所有规则都支持证据查看、编辑和删除。
-- 新建作品可设置计划篇幅，继续创作页与状态栏显示全书字数、章节数和完成率。
+- 新建作品可设置计划篇幅；继续创作页区分有正文的章节与只有章题的文件，展示真实正文进度。
 - 内置新手引导、使用帮助页和完整[作者使用指南](docs/USER_GUIDE.md)。
 
 ## 下载桌面版
 
-在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.3 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
+在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.4 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
 
 任务中明确引用的文件和章节范围会优先进入上下文，预算不足时列出未纳入的资料。重新打开项目后，中断的审阅会显示未完成原因；Claude Code 的分析和公开消息进度也会显示在会话面板中。随编辑自动检查不会重复消费同一版正文已有的审阅，手动复查和实际改稿后的检查仍可执行。
 
@@ -84,7 +85,7 @@ NOVEL_ALLOW_INCOMPLETE=1 npm run audit:novel -- workspaces/wan-jie-zhu-shen
 series-repo/
 ├── manuscript/              # Markdown/TXT 正文；系列可按作品分目录
 ├── canon/                   # 正典、人物、世界、时间线和作品风格
-├── planning/                # 滚动规划
+├── planning/                # 全书路线草案和滚动规划
 ├── decisions/               # 作者确认的高影响决定
 ├── AGENTS.md                # 给通用 Agent 的仓库级边界
 └── .novel/
