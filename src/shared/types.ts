@@ -156,6 +156,7 @@ export interface NavigationProposal {
   diagnosis: string;
   highImpactQuestions: string[];
   recommendedGoal: string;
+  planningScope?: 'work';
   routes: StoryRoute[];
   selectedRouteId?: string;
   selectedRouteIds?: string[];
@@ -362,6 +363,7 @@ export interface AgentRunRequest {
   completionCriteria: string[];
   contextPack?: ContextPack;
   allowNetwork?: boolean;
+  navigationScope?: 'work';
 }
 
 export interface ColdReading { readings: Array<{ filePath: string; quote: string; understanding: string; dialogueChecks?: Array<{quote: string; intendedAction: string; basis: string; priorEvidence: string}>; frictions: Array<{ quote: string; difficulty: string; suggestion: string }> }> }

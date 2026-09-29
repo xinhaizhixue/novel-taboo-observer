@@ -23,6 +23,9 @@ interface ReducedState {
   lastFile?: string;
   stage?: string;
   focus?: string;
+  focusOrder?: number;
+  focusSource?: NovelEvent['source'];
+  taskOrder: Record<string, number>;
   fileOrigins: Record<string, 'author' | 'external'>;
 }
 
@@ -42,12 +45,12 @@ function replaceById<T extends { id: string }>(items: T[], item: T) {
 }
 
 function reduceEvents(events: NovelEvent[]): ReducedState {
-  const state: ReducedState = { reviews: [], goals: [], tasks: [], comments: [], facts: [], proposals: [], agentTasks: [], fileOrigins: {} };
-  for (const event of events) {
+  const state: ReducedState = { reviews: [], goals: [], tasks: [], comments: [], facts: [], proposals: [], agentTasks: [], fileOrigins: {}, taskOrder: {} };
+  for (const [order, event] of events.entries()) {
     const payload = event.payload as unknown as Record<string, unknown>;
     if (event.type === 'review.report') replaceById(state.reviews, payload as unknown as ReviewReport);
     if (event.type === 'goal.upsert') replaceById(state.goals, payload as unknown as Goal);
-    if (event.type === 'task.upsert') replaceById(state.tasks, payload as unknown as CreativeTask);
+    if (event.type === 'task.upsert') { replaceById(state.tasks, payload as unknown as CreativeTask); state.taskOrder[String(payload.id)] = order; }
     if (event.type === 'fact.upsert') replaceById(state.facts, payload as unknown as StoryFact);
     if (event.type === 'proposal.created' || event.type === 'proposal.updated') replaceById(state.proposals, payload as unknown as NavigationProposal);
     if (event.type === 'agent.task') replaceById(state.agentTasks, payload as unknown as AgentTaskRecord);
@@ -55,7 +58,7 @@ function reduceEvents(events: NovelEvent[]): ReducedState {
     if (event.type === 'project.position') {
       state.lastFile = String(payload.filePath ?? state.lastFile ?? '');
       state.stage = String(payload.stage ?? state.stage ?? '逐章创作');
-      state.focus = String(payload.focus ?? state.focus ?? '');
+      if (typeof payload.focus === 'string') { state.focus = payload.focus; state.focusOrder = order; state.focusSource = event.source; }
     }
     if (event.type === 'file.changed' && typeof payload.path === 'string' && (payload.origin === 'author' || payload.origin === 'external')) state.fileOrigins[payload.path] = payload.origin;
   }
@@ -101,10 +104,11 @@ export class ProjectService {
   }
 
   async create(input: { root: string; title: string; kind: 'series' | 'novel'; idea?: string; targetCharacters?: number }) {
-    const root = path.resolve(input.root);
+    if (!path.isAbsolute(input.root.trim())) throw new Error('仓库位置必须是绝对路径。可以填写尚不存在的新目录。');
+    const root = path.resolve(input.root.trim());
     await mkdir(root, { recursive: true });
-    const hasFiles = (await fg('*', { cwd: root, dot: true, onlyFiles: false, deep: 1 })).length > 0;
-    if (hasFiles && !(await exists(path.join(root, '.git')))) throw new Error('目标目录不为空且不是 Git 仓库，请选择空目录或已有仓库');
+    const entries = await fg('*', { cwd: root, dot: true, onlyFiles: false, deep: 1 });
+    if (entries.some((entry) => entry !== '.git')) throw new Error('目标目录已有内容，请填写新目录或空目录；接管已有作品请使用“打开其他仓库”。');
     for (const folder of PROJECT_FOLDERS) await mkdir(path.join(root, folder), { recursive: true });
     await mkdir(path.join(root, '.novel', 'events'), { recursive: true });
     await mkdir(path.join(root, '.novel', 'roles'), { recursive: true });
@@ -128,7 +132,7 @@ export class ProjectService {
     await writeJson(path.join(root, MANIFEST_PATH), manifest);
     await atomicWrite(path.join(root, firstChapter), `# 第一章\n\n${input.idea ? `<!-- 创作灵感：${input.idea.replaceAll('-->', '—>')} -->\n\n` : ''}`);
     await atomicWrite(path.join(root, 'canon', '故事正典.md'), '# 故事正典\n\n> AI 推断与建议不得自动升级为作者确认。\n\n## 人物\n\n## 世界规则\n\n## 时间线\n\n## 知识边界\n\n## 伏笔与承诺\n');
-    await atomicWrite(path.join(root, 'planning', '滚动规划.md'), `# ${manifest.title} · 滚动规划\n\n## 全书方向与结局假设\n\n${input.idea || '待探索'}\n\n## 当前卷骨架\n\n## 未来一至三章\n`);
+    await atomicWrite(path.join(root, 'planning', '滚动规划.md'), `# ${manifest.title} · 滚动规划\n\n## 初始灵感（待确认）\n\n${input.idea || '待探索'}\n\n## 全书方向与结局假设\n\n待探索\n\n## 当前卷骨架\n\n## 未来一至三章\n`);
     await atomicWrite(path.join(root, storyPlanPath(manifest)), STORY_PLAN_TEMPLATE);
     await atomicWrite(path.join(root, 'research', 'README.md'), '# 研究资料\n\nResearcher 可以在任务授权范围内写入这里。区分来源事实、合理推断和待核实问题；研究资料不会自动升级为作品正典。\n');
     await atomicWrite(path.join(root, 'decisions', 'README.md'), '# 已确认决定\n\n高影响创作决定写在这里，保留日期、理由和影响范围。\n');
@@ -171,7 +175,7 @@ export class ProjectService {
     const existingTexts = await fg(['**/*.md', '**/*.markdown', '**/*.txt'], { cwd: root, dot: true, onlyFiles: true, ignore: ['.git/**', '.novel/**', 'node_modules/**'] });
     if (!existingTexts.length) {
       await atomicWrite(path.join(root, 'manuscript', '第一章.md'), '# 第一章\n\n');
-      await atomicWrite(path.join(root, 'planning', '滚动规划.md'), `# ${manifest.title} · 滚动规划\n\n## 全书方向与结局假设\n\n待探索\n\n## 当前卷骨架\n\n## 未来一至三章\n`);
+      await atomicWrite(path.join(root, 'planning', '滚动规划.md'), `# ${manifest.title} · 滚动规划\n\n## 初始灵感（待确认）\n\n待探索\n\n## 全书方向与结局假设\n\n待探索\n\n## 当前卷骨架\n\n## 未来一至三章\n`);
       await atomicWrite(path.join(root, storyPlanPath(manifest)), STORY_PLAN_TEMPLATE);
       await atomicWrite(path.join(root, 'canon', '故事正典.md'), '# 故事正典\n\n> AI 推断与建议不得自动升级为作者确认。\n\n## 人物\n\n## 世界规则\n\n## 时间线\n\n## 知识边界\n\n## 伏笔与承诺\n');
     }
@@ -285,6 +289,8 @@ export class ProjectService {
 
   async state(): Promise<ProjectState> {
     const [{ files, manuscriptContents, planningDocuments }, events, git] = await Promise.all([this.textSnapshot(), this.eventStore.all(), this.gitService.status()]);
+    const planningScope = this.activeManifest.kind === 'series' ? `planning/${this.activeManifest.activeWorkId || 'work-1'}/` : 'planning/';
+    const planningAudit = auditPlanning(planningDocuments.filter((doc) => this.activeManifest.kind !== 'series' || doc.path.startsWith(planningScope) || doc.path.startsWith(`canon/${this.activeManifest.activeWorkId || 'work-1'}/`)));
     const reduced = reduceEvents(events);
     const manuscriptPaths = files.filter((file) => file.category === 'manuscript').map((file) => file.path);
     const currentTexts = new Map(manuscriptPaths.map((file, index) => [file, manuscriptContents[index]]));
@@ -307,16 +313,29 @@ export class ProjectService {
     }
     const goal = [...reduced.goals].filter((item) => item.status === 'active').sort((a, b) => ['author-pinned', 'active-task', 'confirmed-plan', 'agent-suggestion'].indexOf(a.authority) - ['author-pinned', 'active-task', 'confirmed-plan', 'agent-suggestion'].indexOf(b.authority))[0];
     const current = reduced.tasks.filter((item) => item.status === 'now');
-    const next = [...current, ...reduced.tasks.filter((item) => item.status === 'next')].slice(0, 3);
+    const activeWork = this.activeManifest.works.find((work) => work.id === this.activeManifest.activeWorkId);
+    const taskAppliesToWork = (task: CreativeTask) => !activeWork || !task.links.some((file) => file.startsWith('manuscript/')) || task.links.some((file) => file === activeWork.manuscriptRoot || file.startsWith(`${activeWork.manuscriptRoot}/`));
+    const currentForWork = current.filter(taskAppliesToWork);
+    const next = [...currentForWork, ...reduced.tasks.filter((item) => item.status === 'next' && taskAppliesToWork(item))].slice(0, 3);
     const importantComments = reduced.comments.filter((item) => item.status === 'open' && item.severity !== 'suggestion').slice(0, 5);
+    const activeTask = currentForWork[0];
+    const manuscriptFiles = files.filter((file) => file.category === 'manuscript' && (!activeWork || file.path === activeWork.manuscriptRoot || file.path.startsWith(`${activeWork.manuscriptRoot}/`)));
+    const taskFile = activeTask?.kind === 'writing'
+      ? activeTask.links.find((file) => manuscriptFiles.some((item) => item.path === file)) || manuscriptFiles.find((file) => file.path === reduced.lastFile)?.path || manuscriptFiles[0]?.path
+      : activeTask?.links.find((file) => files.some((item) => item.path === file));
+    const continueFile = taskFile || reduced.lastFile || manuscriptFiles[0]?.path;
+    const taskFocusIsNewer = Boolean(activeTask && (reduced.taskOrder[activeTask.id] ?? -1) > (reduced.focusOrder ?? -1));
+    const finishedReviewFocus = !activeTask && reduced.focusSource === 'agent' && /^审查.+并推进下一章$/.test(reduced.focus || '');
     const card: ContinueCard = {
-      location: this.locationFrom(files, reduced.lastFile),
-      stage: reduced.stage || (files.some((item) => item.category === 'manuscript' && item.size > 50) ? '逐章创作与修订' : '灵感与创作意图'),
-      lastFile: reduced.lastFile || files.find((item) => item.category === 'manuscript')?.path,
+      location: this.locationFrom(files, continueFile),
+      stage: planningAudit.attention.length === 0 && !manuscriptContents.some(hasDraftedChapter) && (!reduced.stage || ['灵感与创作意图', '全书路线与结局假设'].includes(reduced.stage)) ? '开篇和前三章' : reduced.stage || (files.some((item) => item.category === 'manuscript' && item.size > 50) ? '逐章创作与修订' : '灵感与创作意图'),
+      lastFile: continueFile,
       goal,
-      focus: reduced.focus || current[0]?.title || goal?.title || '确定下一步创作重点',
+      focus: activeTask
+        ? (taskFocusIsNewer ? activeTask.title : reduced.focus || activeTask.title)
+        : (finishedReviewFocus ? next[0]?.title || goal?.title || reduced.focus : reduced.focus || next[0]?.title || goal?.title) || '确定下一步创作重点',
       next,
-      blockers: reduced.tasks.filter((item) => item.status === 'blocked'),
+      blockers: reduced.tasks.filter((item) => item.status === 'blocked' && taskAppliesToWork(item)),
       importantComments
     };
     const agentFiles = new Set(reduced.agentTasks.flatMap((task) => task.changedFiles));
@@ -325,8 +344,6 @@ export class ProjectService {
     const totalCharacters = draftedChapters.reduce((sum, content) => sum + content.replace(/\s/g, '').length, 0);
     const targetCharacters = this.activeManifest.targetCharacters || 1_000_000;
     const manuscriptStats = { totalCharacters, targetCharacters, chapterCount: manuscriptContents.length, draftedChapterCount: draftedChapters.length, progress: Math.min(1, totalCharacters / targetCharacters) };
-    const planningScope = this.activeManifest.kind === 'series' ? `planning/${this.activeManifest.activeWorkId || 'work-1'}/` : 'planning/';
-    const planningAudit = auditPlanning(planningDocuments.filter((doc) => this.activeManifest.kind !== 'series' || doc.path.startsWith(planningScope) || doc.path.startsWith(`canon/${this.activeManifest.activeWorkId || 'work-1'}/`)));
     return { root: this.activeRoot, manifest: this.activeManifest, files, ...reduced, dataWarnings: this.eventStore.diagnostics, manuscriptStats, planningAudit, continueCard: card, git: attributedGit };
   }
 

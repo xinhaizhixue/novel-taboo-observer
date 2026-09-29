@@ -45,6 +45,18 @@ describe('关闭时保护正文与释放资源', () => {
 });
 
 describe('Writer 完成后的后台审阅', () => {
+  it('规划文件不会触发文学审阅，也不消耗自动观察预算', async () => {
+    const { controller } = await fixture();
+    const plan = await controller.project.readFile('planning/滚动规划.md');
+    const run = vi.spyOn(controller.hub, 'runObserver');
+    await handlers.get('workbench:observerSession')!({}, 'start');
+    const snapshot = { id: 'plan-snapshot', filePath: plan.path, content: plan.content, hash: plan.hash, editorVersion: 1, createdAt: new Date().toISOString() };
+    await expect(handlers.get('workbench:runObserver')!({}, { adapterId: 'codex', mode: 'automatic', snapshot })).rejects.toThrow('只接受正文文件');
+    await expect(handlers.get('workbench:runObserver')!({}, { adapterId: 'codex', mode: 'manual', snapshot })).rejects.toThrow('只接受正文文件');
+    expect(run).not.toHaveBeenCalled();
+    expect((await handlers.get('workbench:observerSession')!({}, 'status')).count).toBe(0);
+  });
+
   it.each(['clear', 'findings', 'incomplete', 'cancelled'] as const)('随编辑自动检查不会重复消费同一版本已有的 %s 报告，手动复查仍可执行', async (status) => {
     const { controller } = await fixture();
     const file = await controller.project.readFile('manuscript/第一章.md');
@@ -88,6 +100,31 @@ describe('Writer 完成后的后台审阅', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(review).not.toHaveBeenCalled();
   });
+});
+
+it('选定全书路线后建立作品级规划任务，不沿用 AI 的过期建议标题', async () => {
+  const { controller } = await fixture();
+  const route = { id: 'route-one', title: '把失去的街重新变成家', pitch: '救人并经营公共安全区。', effect: '逐卷有实际回报', causalChain: ['开灯', '修复街道'], tradeoffs: ['补给有限'], risks: ['救援重复'], followUpImpact: '连通街区', requiredSetup: ['第一盏灯'], firstChapterGoal: '救回第一位居民' };
+  const sourceTask = await handlers.get('workbench:updateTask')!({}, { title: '提出全书路线候选', level: 'work', kind: 'revision', assignee: 'architect', status: 'blocked' });
+  await controller.project.eventStore.append('agent.task', { id: 'architect', creativeTaskId: sourceTask.id, role: 'architect', state: 'completed' } as never, 'agent');
+  await controller.project.eventStore.append('proposal.created', { id: 'outline-proposal', kind: 'routes', planningScope: 'work', status: 'pending', title: '全书路线候选', diagnosis: '尚未规划', highImpactQuestions: ['终局如何收束？'], recommendedGoal: '建议优先审议路线一，选定前不写入正典。', routes: [route, { ...route, id: 'route-two', title: '另一条路线' }], sourceTaskId: 'architect', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as never, 'navigator');
+  await handlers.get('workbench:decideProposal')!({}, { proposalId: 'outline-proposal', routeId: route.id, decision: 'confirm' });
+  const state = await controller.project.state();
+  expect(state.continueCard.goal).toMatchObject({ level: 'work', title: '全书路线：把失去的街重新变成家' });
+  expect(state.continueCard.stage).toBe('全书路线与结局假设');
+  expect(state.tasks.find((task) => task.status === 'now')).toMatchObject({ level: 'work', kind: 'revision', links: ['planning/全书路线.md'] });
+  expect(state.tasks.find((task) => task.id === sourceTask.id)).toMatchObject({ status: 'completed', authorDecision: expect.stringContaining('已选择「把失去的街重新变成家」') });
+});
+
+it('选定章节路线时不会把当前研究文件误作 Writer 正文范围', async () => {
+  const { controller } = await fixture();
+  await controller.project.eventStore.append('project.position', { filePath: 'research/README.md', stage: '开篇和前三章', focus: '准备第一章' }, 'system');
+  const route = { id: 'route-chapter', title: '先救人', pitch: '先救出一名具体居民。', effect: '当章小胜利', causalChain: ['进入夜域', '救人'], tradeoffs: [], risks: [], followUpImpact: '建立避难点', requiredSetup: [], firstChapterGoal: '完成第一次救援' };
+  await controller.project.eventStore.append('proposal.created', { id: 'chapter-proposal', kind: 'routes', status: 'pending', title: '当前章路线', diagnosis: '', highImpactQuestions: [], recommendedGoal: '先看看方案', routes: [route, { ...route, id: 'other', title: '另一方案' }], sourceTaskId: 'architect', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as never, 'navigator');
+  await handlers.get('workbench:decideProposal')!({}, { proposalId: 'chapter-proposal', routeId: route.id, decision: 'confirm' });
+  const state = await controller.project.state();
+  expect(state.tasks.find((task) => task.status === 'now')?.links).toEqual(['manuscript/第一章.md']);
+  expect(state.continueCard.lastFile).toBe('manuscript/第一章.md');
 });
 
 it('Writer 完成后的自动审阅等待已有审阅结束，不因范围重叠丢掉任务', async () => {

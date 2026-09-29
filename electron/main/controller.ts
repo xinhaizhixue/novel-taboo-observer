@@ -8,6 +8,7 @@ import { ProjectService } from './project.js';
 import { RecoveryStore } from './recovery.js';
 import { relocateComment } from './observer.js';
 import { combineStoryRoutes } from './navigation.js';
+import { storyPlanPath } from '../../src/shared/planning-audit.js';
 import { SettingsStore } from './settings.js';
 import { AuthorProfileStore } from './profile.js';
 import { exists, hashText, now, readJson, uid, writeJson } from './utils.js';
@@ -204,6 +205,7 @@ export class WorkbenchController {
         return this.hub.runTask({ ...input, ...(input.adapterId === 'codex' && input.role === 'writer' ? { model: input.model || settings.agents.codexWriterModel || undefined, reasoningEffort: input.reasoningEffort || settings.agents.writerReasoning } : {}) });
       },
       runObserver: async (input) => {
+        if (!input.snapshot.filePath.startsWith('manuscript/')) throw new Error('文学审阅只接受正文文件；规划和设定请使用相应的 Agent。');
         if (input.mode === 'automatic') {
           if (!this.observer.active) throw new Error('Observer 会话未开启');
           const state = await this.project.state();
@@ -366,25 +368,42 @@ export class WorkbenchController {
     const proposal: NavigationProposal = { ...current, routes: route && !current.routes.some((item) => item.id === route!.id) ? [...current.routes, route] : current.routes, status: input.decision === 'confirm' ? 'confirmed' : 'rejected', selectedRouteId: route?.id, selectedRouteIds: selectedRoutes.length > 1 ? selectedRoutes.map((item) => item.id) : route ? [route.id] : undefined, updatedAt: now() };
     await this.project.eventStore.append('proposal.updated', proposal as never, 'author');
     if (route) {
-      const goalLevel: Goal['level'] = current.kind === 'opening' ? 'work' : 'chapter';
+      const fullOutline = current.planningScope === 'work';
+      const goalLevel: Goal['level'] = fullOutline || current.kind === 'opening' ? 'work' : 'chapter';
+      const activeWork = state.manifest.works.find((work) => work.id === state.manifest.activeWorkId);
+      const manuscriptFiles = state.files.filter((file) => file.category === 'manuscript' && (!activeWork || file.path === activeWork.manuscriptRoot || file.path.startsWith(`${activeWork.manuscriptRoot}/`)));
+      const currentChapter = state.tasks.find((task) => task.status === 'now')?.links.find((file) => manuscriptFiles.some((item) => item.path === file))
+        || manuscriptFiles.find((file) => file.path === state.continueCard.lastFile)?.path
+        || manuscriptFiles[0]?.path;
       for (const goal of state.goals.filter((item) => item.status === 'active' && item.level === goalLevel)) {
         await this.project.eventStore.append('goal.upsert', { ...goal, status: 'paused', updatedAt: now() } as never, 'author');
       }
       for (const task of state.tasks.filter((item) => item.status === 'now')) {
         await this.project.eventStore.append('task.upsert', { ...task, status: 'next', updatedAt: now() } as never, 'author');
       }
-      const goal: Goal = { id: uid('goal'), level: goalLevel, title: current.recommendedGoal || route.title, description: route.pitch, authority: 'author-pinned', status: 'active', updatedAt: now() };
+      const goal: Goal = { id: uid('goal'), level: goalLevel, title: fullOutline ? `全书路线：${route.title}` : `推进剧情：${route.title}`, description: route.pitch, authority: 'author-pinned', status: 'active', updatedAt: now() };
       const timestamp = now();
       const task: CreativeTask = {
-        id: uid('task'), title: route.firstChapterGoal || `执行路线：${route.title}`, description: route.pitch, level: current.kind === 'opening' ? 'chapter' : 'scene', status: 'now', kind: 'writing', assignee: 'author', source: 'author', priority: 'high',
-        whyNow: route.effect, known: route.causalChain, missingDecisions: current.highImpactQuestions, aiPreAnalysis: `代价：${route.tradeoffs.join('；') || '无'}\n风险：${route.risks.join('；') || '无'}\n后续影响：${route.followUpImpact}`,
-        authorDecision: `已选择「${route.title}」`, agentWork: `可由 Writer 按此路线执行；新增铺垫：${route.requiredSetup.join('；') || '无'}`,
-        completionCriteria: [route.firstChapterGoal || `完成「${route.title}」所需场景目标`, '正文结果与已确认正典不冲突'], links: state.continueCard.lastFile ? [state.continueCard.lastFile] : [], dependencies: [], createdAt: timestamp, updatedAt: timestamp
+        id: uid('task'), title: fullOutline ? `完善全书路线：${route.title}` : route.firstChapterGoal || `执行路线：${route.title}`, description: route.pitch, level: fullOutline ? 'work' : current.kind === 'opening' ? 'chapter' : 'scene', status: 'now', kind: fullOutline ? 'revision' : 'writing', assignee: 'author', source: 'author', priority: 'high',
+        whyNow: route.effect, known: fullOutline ? [] : route.causalChain, missingDecisions: current.highImpactQuestions, aiPreAnalysis: `候选因果：${route.causalChain.join(' → ')}\n代价：${route.tradeoffs.join('；') || '无'}\n风险：${route.risks.join('；') || '无'}\n后续影响：${route.followUpImpact}`,
+        authorDecision: `已选择「${route.title}」`, agentWork: fullOutline ? `先整理全书路线与正典边界；候选铺垫：${route.requiredSetup.join('；') || '无'}` : `可由 Writer 按此路线执行；新增铺垫：${route.requiredSetup.join('；') || '无'}`,
+        completionCriteria: fullOutline ? ['全书路线六项均有实质内容并经作者核对', '候选机制与已确认正典保持区分'] : [route.firstChapterGoal || `完成「${route.title}」所需场景目标`, '正文结果与已确认正典不冲突'], links: fullOutline ? [storyPlanPath(state.manifest)] : currentChapter ? [currentChapter] : [], dependencies: [], createdAt: timestamp, updatedAt: timestamp
       };
       await this.project.eventStore.append('goal.upsert', goal as never, 'author');
       await this.project.eventStore.append('task.upsert', task as never, 'author');
       await this.project.eventStore.append('decision.recorded', { proposalId: proposal.id, route, goalId: goal.id, taskId: task.id } as never, 'author');
-      await this.project.eventStore.append('project.position', { filePath: state.continueCard.lastFile || '', stage: current.kind === 'opening' ? '开篇和前三章' : state.continueCard.stage, focus: task.title }, 'system');
+      await this.project.eventStore.append('project.position', { filePath: fullOutline ? storyPlanPath(state.manifest) : currentChapter || '', stage: fullOutline ? '全书路线与结局假设' : current.kind === 'opening' ? '开篇和前三章' : state.continueCard.stage, focus: task.title }, 'system');
+    }
+    const sourceRun = state.agentTasks.find((item) => item.id === current.sourceTaskId);
+    const sourceTask = state.tasks.find((item) => item.id === sourceRun?.creativeTaskId);
+    if (sourceRun?.state === 'completed' && sourceTask && !['completed', 'cancelled'].includes(sourceTask.status)) {
+      const decision = route ? `已选择「${route.title}」，候选细节仍须写入并核对大纲与正典。` : '本次候选均未采用，未写入正典。';
+      await this.project.eventStore.append('task.upsert', {
+        ...sourceTask,
+        status: 'completed',
+        authorDecision: [sourceTask.authorDecision, decision].filter(Boolean).join('\n'),
+        updatedAt: now()
+      } as never, 'author');
     }
     this.send('workbench:project-change');
     return proposal;

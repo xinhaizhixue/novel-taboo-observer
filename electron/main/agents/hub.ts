@@ -357,7 +357,7 @@ export class AgentHub {
     const proposal: NavigationProposal = {
       id: uid('proposal'), kind: input.role === 'architect' ? 'routes' : stage.includes('灵感') || stage.includes('开书') ? 'opening' : 'guidance', status: 'pending',
       title: String(parsed.title ?? '下一步剧情路线'), diagnosis: String(parsed.diagnosis ?? ''), highImpactQuestions: strings(parsed.highImpactQuestions).slice(0, 3),
-      recommendedGoal: String(parsed.recommendedGoal ?? ''), routes, sourceTaskId: record.id, createdAt: now(), updatedAt: now()
+      recommendedGoal: String(parsed.recommendedGoal ?? ''), planningScope: input.navigationScope === 'work' ? 'work' : undefined, routes, sourceTaskId: record.id, createdAt: now(), updatedAt: now()
     };
     await this.project.eventStore.append('proposal.created', proposal as never, 'navigator');
   }
@@ -400,6 +400,10 @@ export class AgentHub {
     const filePath = [...record.changedFiles].sort(compareNaturalPath).reverse().find((file) => manuscriptRoots.some((root) => file === root || file.startsWith(`${root}/`)));
     if (!filePath) return;
     await this.project.markWorkSerializing(filePath);
+    const workRoot = manuscriptRoots.find((root) => filePath === root || filePath.startsWith(`${root}/`));
+    const lastPosition = (await this.project.eventStore.all()).filter((event) => event.type === 'project.position').at(-1);
+    const lastFile = String((lastPosition?.payload as Record<string, unknown> | undefined)?.filePath || '');
+    if (workRoot && lastFile && (lastFile === workRoot || lastFile.startsWith(`${workRoot}/`)) && compareNaturalPath(lastFile, filePath) > 0) return;
     const chapter = path.basename(filePath).replace(/\.(?:md|markdown|txt)$/i, '');
     await this.project.eventStore.append('project.position', {
       filePath,

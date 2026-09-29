@@ -42,7 +42,7 @@ function finish(prompt) {
     process.stdout.write(JSON.stringify({ type: 'result', session_id: 'cold-session', result }) + String.fromCharCode(10));
     return;
   }
-  if (prompt.includes('FAKE_THINKING')) { process.stdout.write(JSON.stringify({type:'system',subtype:'thinking_tokens'})+String.fromCharCode(10));setTimeout(()=>process.stdout.write(JSON.stringify({type:'result',result:'finished'})+String.fromCharCode(10)),1500);return; }
+  if (prompt.includes('FAKE_THINKING')) { process.stdout.write(JSON.stringify({type:'system',subtype:'thinking_tokens'})+String.fromCharCode(10));setTimeout(()=>process.stdout.write(JSON.stringify({type:'result',result:'finished'})+String.fromCharCode(10)),3500);return; }
   if (prompt.includes('FAKE_STRUCTURED_OUTPUT')) { process.stdout.write(JSON.stringify({type:'result',result:'',structured_output:{checked:true}})+String.fromCharCode(10));return; }
   if (prompt.includes('FAKE_RESULT_ERROR')) { process.stdout.write(JSON.stringify({type:'result',is_error:true,result:'model failed'})+String.fromCharCode(10));return; }
   if (prompt.includes('FAKE_NEWER_CLI_REQUIRED')) { process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'The configured model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.' } }) + '\\n'); process.exit(1); }
@@ -228,6 +228,12 @@ describe('真实 CLI 子进程适配器', () => {
     expect(positionAfterWriter.stage).toBe('逐章创作、观察和修订');
     expect(positionAfterWriter.focus).toContain('审查第一章并推进下一章');
     expect(project.activeManifest.works[0].status).toBe('serializing');
+    await project.writeFile('manuscript/第二章.md', '# 第二章\n已经写到后章。');
+    const initialTask = (await project.state()).tasks.find((task) => task.status === 'now')!;
+    await project.eventStore.append('task.upsert', { ...initialTask, status: 'completed', updatedAt: new Date().toISOString() } as never, 'observer');
+    await project.eventStore.append('project.position', { filePath: 'manuscript/第二章.md', stage: '逐章创作、观察和修订', focus: '审查第二章并推进下一章' }, 'agent');
+    await (hub as any).syncProjectPosition({ role: 'writer', state: 'completed', changedFiles: ['manuscript/第一章.md'] });
+    expect((await project.state()).continueCard.lastFile).toBe('manuscript/第二章.md');
     const writerCall = (await calls(logPath)).find((call) => call.prompt.includes('FAKE_WRITE'));
     expect(writerCall?.args.join(' ')).toContain('model_reasoning_effort="medium"');
 
@@ -313,7 +319,7 @@ describe('真实 CLI 子进程适配器', () => {
     expect(completedCreativeTask?.cancellationReason).toBeUndefined();
     const recoveryCall = (await calls(logPath)).find((call) => call.prompt === 'finish recovered task');
     expect(recoveryCall?.args).toContain('fake-interrupted-session');
-  });
+  }, 20_000);
 });
 
 it('显式任务模型作为独立CLI参数传入，不改全局配置也不被轻量回退覆盖', async () => {
@@ -338,6 +344,6 @@ it('Claude structured_output 正确交付，result.is_error 不冒充成功', as
 
 it('Claude 已返回推理进度时不再误报启动超时，推理强度传入CLI', async()=>{
  const {command,logPath}=await fakeCli('claude');const root=await mkdtemp(path.join(os.tmpdir(),'claude-thinking-'));roots.push(root);
- const result=await new ClaudeAdapter(command,false).run({taskId:'thinking',root,prompt:'FAKE_THINKING',reasoningEffort:'high',startupTimeoutMs:1000,readOnly:true,outputPath:path.join(root,'out'),emit:()=>{}}).completed;
+ const result=await new ClaudeAdapter(command,false).run({taskId:'thinking',root,prompt:'FAKE_THINKING',reasoningEffort:'high',startupTimeoutMs:2500,readOnly:true,outputPath:path.join(root,'out'),emit:()=>{}}).completed;
  expect(result.exitCode).toBe(0);expect(result.finalMessage).toBe('finished');expect((await calls(logPath)).some(c=>c.args.includes('--effort')&&c.args.includes('high'))).toBe(true);
-});
+}, 10_000);

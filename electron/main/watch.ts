@@ -28,6 +28,9 @@ export async function watchProjectFiles(root: string, handlers: {
     const relative = relativeInput.split(path.sep).join('/');
     if (relative.startsWith('.novel/events/')) handlers.onProject();
     else if (TEXT_EXTENSION.test(relative)) handlers.onFile({ path: relative, hash: 'missing', content: '' });
+  }).on('addDir', (relativeInput) => {
+    const relative = relativeInput.split(path.sep).join('/');
+    if (relative.startsWith('.novel/events/')) handlers.onProject();
   });
   await new Promise<void>((resolve, reject) => watcher.once('ready', resolve).once('error', reject));
   return watcher as FSWatcher;

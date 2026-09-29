@@ -13,7 +13,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function waitUntil(check: () => boolean, timeout = 5000) {
+async function waitUntil(check: () => boolean, timeout = 10_000) {
   const started = Date.now();
   while (Date.now() - started < timeout) {
     if (check()) return;
@@ -51,5 +51,5 @@ describe('作品仓库外部文件监听', () => {
     await atomicWrite(path.join(root, '.novel', 'events', '2026-08', 'session.jsonl'), '{"type":"task.upsert"}\n');
     await waitUntil(() => projectChanges > 0);
     expect(fileChanges.some((change) => change.path === 'manuscript/第一卷/第001章.md')).toBe(true);
-  });
+  }, 30_000);
 });

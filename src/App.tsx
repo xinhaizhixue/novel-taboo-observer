@@ -79,7 +79,7 @@ export default function App() {
   const [preview, setPreview] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
-  const [agentPreset, setAgentPreset] = useState<{ role: AgentRole; objective: string; nonce: number } | null>(null);
+  const [agentPreset, setAgentPreset] = useState<{ role: AgentRole; objective: string; nonce: number; navigationScope?: 'work' } | null>(null);
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchPending, setSearchPending] = useState(false);
@@ -99,6 +99,8 @@ export default function App() {
   const lastWriterDiskSync = useRef('');
   const lastAnalyzed = useRef('');
   const lastAnalysisAt = useRef(0);
+  const observedBufferPath = useRef<string | undefined>(undefined);
+  const observerProjectRoot = useRef<string | undefined>(undefined);
   const rightTabRefs = useRef<Record<RightTab, HTMLButtonElement | null>>({ comments: null, agents: null, context: null });
   const hasRunningProjectAgent = Boolean(project?.agentTasks.some((task) => task.state === 'running' || task.state === 'queued'));
   useEffect(() => { bufferRef.current = buffer; }, [buffer]);
@@ -223,6 +225,26 @@ export default function App() {
     }
   }), [api, refresh, syncBufferFromDisk]);
 
+  useEffect(() => {
+    if (observerProjectRoot.current === project?.root) return;
+    observerProjectRoot.current = project?.root;
+    setObserverRunning(false);
+    setObserverTaskId(null);
+    setObserverError(null);
+    lastAnalyzed.current = '';
+    lastAnalysisAt.current = 0;
+    observedBufferPath.current = undefined;
+  }, [project?.root]);
+
+  useEffect(() => {
+    if (!observerTaskId) return;
+    const task = project?.agentTasks.find((item) => item.id === observerTaskId && item.role === 'observer');
+    if (!task || task.state === 'queued' || task.state === 'running') return;
+    setObserverRunning(false);
+    setObserverTaskId(null);
+    setObserverError(task.state === 'failed' ? task.error || 'Observer 未能完成本次检查。' : null);
+  }, [observerTaskId, project?.agentTasks]);
+
   useEffect(() => api.onExternalFileChange(applyDiskChange), [api, applyDiskChange]);
 
   const writerOwnsCurrentBuffer = Boolean(buffer && project?.agentTasks.some((task) => task.role === 'writer' && task.state === 'running' && task.scope.some((scope) => buffer.path === scope || buffer.path.startsWith(`${scope.replace(/\/$/, '')}/`))));
@@ -328,6 +350,10 @@ export default function App() {
 
   const analyze = useCallback(async (mode: 'automatic' | 'manual' | 'selection' | 'review' | 'explain' = 'manual', commentId?: string) => {
     if (!buffer) return;
+    if (!buffer.path.startsWith('manuscript/')) {
+      if (mode !== 'automatic') setNotice({ kind: 'info', text: '文学审阅只检查正文。规划与设定请使用 Story Architect 或 Canon Keeper。' });
+      return;
+    }
     if (observerRunning || project?.agentTasks.some((task) => task.role === 'observer' && task.state === 'running')) {
       if (mode !== 'automatic') setNotice({ kind: 'info', text: '已有审阅正在进行；本次检查尚未启动，请完成后重试。' });
       return;
@@ -360,9 +386,15 @@ export default function App() {
     finally { setObserverRunning(false); setObserverTaskId(null); await refresh(); }
   }, [api, observerTaskId, refresh]);
 
+  useEffect(() => {
+    if (observedBufferPath.current === buffer?.path) return;
+    observedBufferPath.current = buffer?.path;
+    lastAnalyzed.current = buffer?.content || '';
+    lastAnalysisAt.current = Date.now();
+  }, [buffer?.path]);
 
   useEffect(() => {
-    if (!observer.active || observerRunning || writerOwnsCurrentBuffer || !buffer || settings.observer.mode === 'manual') return;
+    if (!observer.active || observerRunning || writerOwnsCurrentBuffer || !buffer?.path.startsWith('manuscript/') || settings.observer.mode === 'manual') return;
     const currentCharacters = characters(buffer.content);
     if (currentCharacters < 30) return;
     const changed = Math.abs(currentCharacters - characters(lastAnalyzed.current));
@@ -403,7 +435,7 @@ export default function App() {
 
   const createNewProject = async (submitted?: Pick<typeof projectCreate, 'title' | 'idea' | 'targetWan' | 'kind'>) => {
     const value = submitted ? { ...projectCreate, ...submitted } : projectCreate;
-    if (!value.root || !value.title.trim() || !isValidTargetWan(value.targetWan) || value.submitting) { setProjectCreate({ ...value, error: !value.root ? '请先选择仓库位置。' : !value.title.trim() ? '请输入作品名。' : '计划篇幅必须在 5—1000 万字之间。' }); return; }
+    if (!value.root.trim() || !value.title.trim() || !isValidTargetWan(value.targetWan) || value.submitting) { setProjectCreate({ ...value, error: !value.root.trim() ? '请输入新仓库的绝对路径，或使用“选择”。' : !value.title.trim() ? '请输入作品名。' : '计划篇幅必须在 5—1000 万字之间。' }); return; }
     const current = bufferRef.current;
     if (current?.state === 'conflict' || current?.state === 'dirty') { setProjectCreate((value) => ({ ...value, error: '当前正文尚未安全保存或仍有冲突，请处理后再新建作品。' })); return; }
     setProjectCreate({ ...value, error: '', submitting: true });
@@ -421,8 +453,8 @@ export default function App() {
 
   const requestTrash = (kind: TrashKind, path: string) => setTrashTarget({ kind, path });
 
-  const openAgent = (role: AgentRole, objective: string) => {
-    setAgentPreset({ role, objective, nonce: Date.now() });
+  const openAgent = (role: AgentRole, objective: string, navigationScope?: 'work') => {
+    setAgentPreset({ role, objective, navigationScope, nonce: Date.now() });
     setRightOpen(true);
     setRightTab('agents');
   };
@@ -438,7 +470,7 @@ export default function App() {
     } catch (cause) { setNotice({ kind: 'error', text: `打开全书路线失败：${errorMessage(cause)}` }); }
   };
 
-  const planWithAgent = () => openAgent('architect', '请结合已保存正文、正典和规划，先列出有证据的既定事实与全书路线缺口，再给出两至三套可比较的全书规划候选：题材承诺和阶段回报、主角成长及能力边界、世界机制或灾变答案、分卷转折、终局与人物收束、当前卷下一步。说明每套方案需要补的铺垫及对已有正文的影响。不要直接修改正文、规划或正典；所有方案都等待作者选择。');
+  const planWithAgent = () => openAgent('architect', '请结合已保存正文、正典和规划，先列出有证据的既定事实与全书路线缺口，再给出两至三套可比较的全书规划候选：题材承诺和阶段回报、主角成长及能力边界、世界机制或灾变答案、分卷转折、终局与人物收束、当前卷下一步。说明每套方案需要补的铺垫及对已有正文的影响。不要直接修改正文、规划或正典；所有方案都等待作者选择。', 'work');
 
   const createFile = (category: ProjectFile['category']) => {
     const activeWorkRoot = project?.manifest.works.find((work) => work.id === project.manifest.activeWorkId)?.manuscriptRoot || 'manuscript';
@@ -556,7 +588,7 @@ export default function App() {
           <button ref={(element) => { rightTabRefs.current.context = element; }} className={rightTab === 'context' ? 'active' : ''} onClick={() => setRightTab('context')}>上下文</button>
           <button className="close-panel" onClick={() => setRightOpen(false)}><PanelRightClose size={16} /></button>
         </div>
-        <div style={{ display: rightTab === 'comments' ? 'contents' : 'none' }}><CommentsPanel comments={contextualComments} running={observerRunning || project.agentTasks.some((task) => task.role === 'observer' && task.state === 'running')} canCancel={Boolean(observerTaskId)} canAnalyze={Boolean(buffer)} error={observerError} active={observer.active} count={observer.count} budget={observer.budget} agents={agents} adapter={observerAdapter} onAdapter={changeObserverAdapter} onToggle={toggleObserver} onAnalyze={() => void analyze('manual')} onCancel={() => void cancelObserver()} onSelect={(comment) => { const editor = editorRef.current; if (!editor || comment.status === 'stale') return; const length = editor.state.doc.length; const start = Math.min(length, comment.anchor.start); const end = Math.min(length, comment.anchor.end); if (editor.state.sliceDoc(start, end) !== comment.anchor.quote) return; editor.dispatch({ selection: { anchor: start, head: end }, scrollIntoView: true }); editor.focus(); }} onFeedback={async (comment, action, reason) => { if (['review', 'explain'].includes(action) && (observerRunning || project.agentTasks.some((task) => task.role === 'observer' && task.state === 'running'))) { setNotice({ kind: 'info', text: '已有审阅正在进行；本次检查尚未启动，请完成后重试。' }); return; } await api.commentFeedback({ commentId: comment.id, action, reason }); await refresh(); if (action === 'review') void analyze('review', comment.id); if (action === 'explain') void analyze('explain', comment.id); }} onSendWriter={async (comment) => {
+        <div style={{ display: rightTab === 'comments' ? 'contents' : 'none' }}><CommentsPanel comments={contextualComments} running={observerRunning || project.agentTasks.some((task) => task.role === 'observer' && task.state === 'running')} canCancel={Boolean(observerTaskId)} canAnalyze={Boolean(buffer?.path.startsWith('manuscript/'))} error={observerError} active={observer.active} count={observer.count} budget={observer.budget} agents={agents} adapter={observerAdapter} onAdapter={changeObserverAdapter} onToggle={toggleObserver} onAnalyze={() => void analyze('manual')} onCancel={() => void cancelObserver()} onSelect={(comment) => { const editor = editorRef.current; if (!editor || comment.status === 'stale') return; const length = editor.state.doc.length; const start = Math.min(length, comment.anchor.start); const end = Math.min(length, comment.anchor.end); if (editor.state.sliceDoc(start, end) !== comment.anchor.quote) return; editor.dispatch({ selection: { anchor: start, head: end }, scrollIntoView: true }); editor.focus(); }} onFeedback={async (comment, action, reason) => { if (['review', 'explain'].includes(action) && (observerRunning || project.agentTasks.some((task) => task.role === 'observer' && task.state === 'running'))) { setNotice({ kind: 'info', text: '已有审阅正在进行；本次检查尚未启动，请完成后重试。' }); return; } await api.commentFeedback({ commentId: comment.id, action, reason }); await refresh(); if (action === 'review') void analyze('review', comment.id); if (action === 'explain') void analyze('explain', comment.id); }} onSendWriter={async (comment) => {
           const writer = [...project.agentTasks].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).find((task) => task.role === 'writer' && task.sessionId && task.state !== 'running' && task.scope.some((scope) => comment.anchor.filePath === scope || comment.anchor.filePath.startsWith(`${scope.replace(/\/$/, '')}/`)));
           if (!writer) { setNotice({ kind: 'info', text: '没有覆盖当前文件且可续接的 Writer 会话。请先在 Agent 面板启动 Writer。' }); return; }
           try {
@@ -600,7 +632,7 @@ function ProjectHubModal({ mode, project, repository, create, trashEntries, onMo
   trashEntries: TrashEntry[]; onMode(mode: 'home' | 'create'): void; onChangeCreate(value: typeof create): void; onChooseRoot(): void; onCreate(value: Pick<typeof create, 'title' | 'idea' | 'targetWan' | 'kind'>): void; onOpen(): void; onReveal(): void; onRestore(id: string): Promise<void>; onTrashRepository(): void; onClose(): void;
 }) {
   const [copied, setCopied] = useState(false);
-  if (mode === 'create') return <Modal title="新建小说仓库" onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); onCreate({ title: String(data.get('title') || ''), idea: String(data.get('idea') || ''), targetWan: parseTargetWanDraft(String(data.get('targetWan') || '')), kind: create.kind }); }}><p className="modal-lead">选择空目录，工作台会创建 Git 仓库、第一章、正典、规划、研究区和初始任务。不会覆盖已有文件。</p><div className="segmented light"><button type="button" className={create.kind === 'novel' ? 'active' : ''} onClick={() => onChangeCreate({ ...create, kind: 'novel' })}>独立小说</button><button type="button" className={create.kind === 'series' ? 'active' : ''} onClick={() => onChangeCreate({ ...create, kind: 'series' })}>系列作品</button></div><label>作品名<input name="title" autoFocus value={create.title} onChange={(event) => onChangeCreate({ ...create, title: event.target.value, error: '' })} placeholder="可以先使用暂定名" /></label><label>一句灵感<textarea name="idea" value={create.idea} onChange={(event) => onChangeCreate({ ...create, idea: event.target.value, error: '' })} placeholder="没有也可以留空，之后让 Navigator 帮你探索" /></label><label>计划篇幅（万字）<input name="targetWan" type="number" min="5" max="1000" value={targetWanDraftValue(create.targetWan)} onChange={(event) => onChangeCreate({ ...create, targetWan: parseTargetWanDraft(event.target.value), error: '' })} onBlur={() => onChangeCreate({ ...create, targetWan: clampTargetWan(create.targetWan) })} /></label><label>仓库位置<div className="path-input light"><input readOnly value={create.root} placeholder="选择一个空目录" /><button type="button" onClick={onChooseRoot}>选择…</button></div></label>{create.error && <p className="form-error">{create.error}</p>}<div className="modal-actions"><button type="button" onClick={() => onMode('home')}>返回作品中心</button><button type="submit" className="primary" disabled={create.submitting}>{create.submitting ? '正在建立…' : '建立写作现场'}</button></div></form></Modal>;
+  if (mode === 'create') return <Modal title="新建小说仓库" onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); onCreate({ title: String(data.get('title') || ''), idea: String(data.get('idea') || ''), targetWan: parseTargetWanDraft(String(data.get('targetWan') || '')), kind: create.kind }); }}><p className="modal-lead">填写尚不存在的新目录绝对路径，或选择现有空目录。工作台会创建 Git 仓库和写作文件，不覆盖已有内容。</p><div className="segmented light"><button type="button" className={create.kind === 'novel' ? 'active' : ''} onClick={() => onChangeCreate({ ...create, kind: 'novel' })}>独立小说</button><button type="button" className={create.kind === 'series' ? 'active' : ''} onClick={() => onChangeCreate({ ...create, kind: 'series' })}>系列作品</button></div><label>作品名<input name="title" autoFocus value={create.title} onChange={(event) => onChangeCreate({ ...create, title: event.target.value, error: '' })} placeholder="可以先使用暂定名" /></label><label>一句灵感<textarea name="idea" value={create.idea} onChange={(event) => onChangeCreate({ ...create, idea: event.target.value, error: '' })} placeholder="没有也可以留空，之后让 Navigator 帮你探索" /></label><label>计划篇幅（万字）<input name="targetWan" type="number" min="5" max="1000" value={targetWanDraftValue(create.targetWan)} onChange={(event) => onChangeCreate({ ...create, targetWan: parseTargetWanDraft(event.target.value), error: '' })} onBlur={() => onChangeCreate({ ...create, targetWan: clampTargetWan(create.targetWan) })} /></label><label>仓库位置<div className="path-input light"><input value={create.root} onChange={(event) => onChangeCreate({ ...create, root: event.target.value, error: '' })} placeholder="例如 /Users/你的名字/小说/新书名" /><button type="button" onClick={onChooseRoot}>选择…</button></div></label>{create.error && <p className="form-error">{create.error}</p>}<div className="modal-actions"><button type="button" onClick={() => onMode('home')}>返回作品中心</button><button type="submit" className="primary" disabled={create.submitting}>{create.submitting ? '正在建立…' : '建立写作现场'}</button></div></form></Modal>;
   return <Modal title="作品与仓库" onClose={onClose}>
     <div className="repository-card"><div><span>当前作品</span><h4>{project.manifest.title}</h4></div><dl><div><dt>本地仓库</dt><dd><code>{repository?.root || project.root}</code></dd></div><div><dt>分支 / 版本</dt><dd>{repository?.branch || project.git.branch}{repository?.head ? ` · ${repository.head}` : ''}</dd></div><div><dt>远端地址</dt><dd>{repository?.remote || '未配置远端，仅保存在本机'}</dd></div><div><dt>工作区</dt><dd>{repository?.clean ? '干净' : `${repository?.changedFiles ?? project.git.files.length} 项未提交变更`}</dd></div></dl><div className="repository-actions"><button onClick={onReveal}><FolderOpen size={14} />在 Finder 中显示</button><button onClick={async () => { await navigator.clipboard.writeText(repository?.root || project.root); setCopied(true); setTimeout(() => setCopied(false), 1200); }}><Copy size={14} />{copied ? '已复制' : '复制路径'}</button></div></div>
     <div className="project-hub-actions"><button className="primary" onClick={() => onMode('create')}><Plus size={15} />新建小说</button><button onClick={onOpen}><Archive size={15} />打开其他仓库</button></div>
@@ -636,7 +668,7 @@ function Welcome({ onOpen, onCreated, notice }: { onOpen(): void; onCreated(stat
   const chooseRoot = async () => { const root = await window.workbench.chooseProject(); if (root) setForm((value) => ({ ...value, root })); };
   const create = async (submitted?: Pick<typeof form, 'title' | 'idea' | 'targetWan' | 'kind'>) => {
     const value = submitted ? { ...form, ...submitted } : form;
-    if (!value.root) { setError('请先选择仓库位置。'); return; }
+    if (!value.root.trim()) { setError('请输入新仓库的绝对路径，或使用“选择”。'); return; }
     if (!value.title.trim()) { setError('请输入作品名。'); return; }
     if (!isValidTargetWan(value.targetWan)) { setError('计划篇幅必须在 5—1000 万字之间。'); return; }
     try { setError(''); onCreated(await window.workbench.createProject({ root: value.root, title: value.title.trim(), idea: value.idea.trim(), kind: value.kind, targetCharacters: clampTargetWan(value.targetWan) * 10_000 })); } catch (cause) { setError(errorMessage(cause)); }
@@ -649,7 +681,7 @@ function Welcome({ onOpen, onCreated, notice }: { onOpen(): void; onCreated(stat
       <label>作品名<input name="title" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="先用暂定名也可以" /></label>
       <label>一句灵感<textarea name="idea" value={form.idea} onChange={(event) => setForm({ ...form, idea: event.target.value })} placeholder="例如：一个能看见他人死亡倒计时的外卖员，发现自己的数字每天都在增加。" /></label>
       <label>计划篇幅（万字）<input name="targetWan" type="number" min="5" max="1000" value={targetWanDraftValue(form.targetWan)} onChange={(event) => setForm({ ...form, targetWan: parseTargetWanDraft(event.target.value) })} onBlur={() => setForm({ ...form, targetWan: clampTargetWan(form.targetWan) })} /></label>
-      <label>仓库位置<div className="path-input"><input value={form.root} readOnly placeholder="选择一个空目录或已有 Git 仓库" /><button type="button" onClick={chooseRoot}>选择</button></div></label>
+      <label>仓库位置<div className="path-input"><input value={form.root} onChange={(event) => setForm({ ...form, root: event.target.value })} placeholder="输入新目录绝对路径，或选择现有空目录" /><button type="button" onClick={chooseRoot}>选择</button></div></label>
       {(error || notice) && <p className="form-error">{error || notice?.text}</p>}
       <div className="modal-actions"><button type="button" onClick={() => setCreating(false)}>返回</button><button type="submit" className="primary"><WandSparkles size={17} />建立写作现场</button></div>
     </form>}
@@ -816,7 +848,7 @@ function JourneyPanel({ project, onOpenPlan, onPlanAgent, onAgent, onDecide }: {
       return <div className={`journey-step ${planGap ? 'attention' : index < current ? 'visited' : index === current ? 'current' : ''}`} key={stage}><div className="step-index">{index + 1}</div><div><b>{stage}</b><span>{planGap ? '仍有关键方向未记录，可先补齐或明确探索式继续' : index === current ? project.continueCard.focus : index < current ? '写作进度已越过此处，内容请单独核对' : '将在需要时展开'}</span></div>{index === current && <button onClick={onAgent}>让 AI 先给方案</button>}</div>;
     })}</div>
     {proposals.length > 0 && <section className="proposal-section"><div className="section-title"><Compass size={18} /><h3>AI 路线候选</h3></div>{proposals.map((proposal) => <article className={`proposal-card proposal-${proposal.status}`} key={proposal.id}>
-      <div className="proposal-head"><div><span>{proposal.kind === 'opening' ? '开书候选' : proposal.kind === 'routes' ? '卡文推演' : '下一步建议'}</span><h3>{proposal.title}</h3></div><b>{proposal.status === 'pending' ? '待作者决定' : proposal.status === 'confirmed' ? '已确认' : '已拒绝'}</b></div>
+      <div className="proposal-head"><div><span>{proposal.planningScope === 'work' ? '全书路线候选' : proposal.kind === 'opening' ? '开书候选' : proposal.kind === 'routes' ? '卡文推演' : '下一步建议'}</span><h3>{proposal.title}</h3></div><b>{proposal.status === 'pending' ? '待作者决定' : proposal.status === 'confirmed' ? '已确认' : '已拒绝'}</b></div>
       <p>{proposal.diagnosis}</p>
       {proposal.highImpactQuestions.length > 0 && <details><summary>仍需考虑的高影响问题</summary><ul>{proposal.highImpactQuestions.map((question) => <li key={question}>{question}</li>)}</ul></details>}
       <div className="route-grid">{proposal.routes.map((route) => <section className={proposal.selectedRouteId === route.id ? 'selected' : ''} key={route.id}><h4>{route.title}</h4><p>{route.pitch}</p><dl><div><dt>预期效果</dt><dd>{route.effect}</dd></div><div><dt>因果链</dt><dd>{route.causalChain.join(' → ')}</dd></div><div><dt>代价</dt><dd>{route.tradeoffs.join('；') || '无明显代价'}</dd></div><div><dt>风险</dt><dd>{route.risks.join('；') || '暂无'}</dd></div><div><dt>后续影响</dt><dd>{route.followUpImpact}</dd></div><div><dt>新增铺垫</dt><dd>{route.requiredSetup.join('；') || '无需新增'}</dd></div></dl>{proposal.status === 'pending' && <><label className="combine-route"><input type="checkbox" checked={(combined[proposal.id] || []).includes(route.id)} onChange={(event) => setCombined((value) => ({ ...value, [proposal.id]: event.target.checked ? [...(value[proposal.id] || []), route.id] : (value[proposal.id] || []).filter((id) => id !== route.id) }))} />加入组合</label><button className="primary" onClick={() => void onDecide({ proposalId: proposal.id, routeId: route.id, decision: 'confirm' })}>选用这条路线</button></>}</section>)}</div>
@@ -828,12 +860,13 @@ function JourneyPanel({ project, onOpenPlan, onPlanAgent, onAgent, onDecide }: {
 
 function EditorWorkspace(props: { buffer: BufferState | null; comments: ObserverComment[]; files: ProjectFile[]; preview: boolean; focusMode: boolean; readOnly: boolean; onOpen(path: string): void; onChange(value: string): void; onSave(): void; onAnalyze(mode: 'manual' | 'selection'): void; onRecovery(): void; onTogglePreview(): void; onToggleFocus(): void; onCreateEditor(view: EditorView): void }) {
   if (!props.buffer) return <div className="empty-editor"><BookOpen size={32} /><h2>选择一章开始写作</h2><div>{props.files.filter((file) => file.category === 'manuscript').map((file) => <button key={file.path} onClick={() => props.onOpen(file.path)}>{fileTitle(file.path)}</button>)}</div></div>;
-  return <div className="editor-page"><div className="editor-topbar"><div className="editor-document-heading"><span className="eyebrow">{props.buffer.path}</span><h2>{fileTitle(props.buffer.path)}</h2></div><div className="editor-tools" role="toolbar" aria-label="正文工具">
+  const reviewable = props.buffer.path.startsWith('manuscript/');
+  return <div className="editor-page"><div className="editor-topbar"><div className="editor-document-heading"><span className="eyebrow">{props.buffer.path}</span><h2>{fileTitle(props.buffer.path)}</h2></div><div className="editor-tools" role="toolbar" aria-label={reviewable ? '正文工具' : '文档工具'}>
     <button className="save-tool" title="保存 (Command+S)" aria-label="保存" onClick={props.onSave} disabled={props.buffer.state !== 'dirty'}><Save size={15} /><span className="tool-label">保存</span></button>
     <button title="恢复历史版本" aria-label="恢复历史版本" onClick={props.onRecovery}><History size={15} /><span className="tool-label">恢复版本</span></button>
     <span className="editor-tool-divider" />
-    <button title="请 Observer 检查选中文字" aria-label="检查选中文字" onClick={() => props.onAnalyze('selection')}><MessageSquareText size={15} /><span className="tool-label">检查选中</span></button>
-    <button title="请 Observer 检查当前正文" aria-label="立即检查当前正文" onClick={() => props.onAnalyze('manual')}><Eye size={15} /><span className="tool-label">立即检查</span></button>
+    <button title={reviewable ? '请 Observer 检查选中文字' : '文学审阅仅用于正文'} aria-label="检查选中文字" disabled={!reviewable} onClick={() => props.onAnalyze('selection')}><MessageSquareText size={15} /><span className="tool-label">检查选中</span></button>
+    <button title={reviewable ? '请 Observer 检查当前正文' : '文学审阅仅用于正文'} aria-label="立即检查当前正文" disabled={!reviewable} onClick={() => props.onAnalyze('manual')}><Eye size={15} /><span className="tool-label">立即检查</span></button>
     <span className="editor-tool-divider" />
     <button title="切换 Markdown 预览" aria-label="切换 Markdown 预览" className={props.preview ? 'active' : ''} onClick={props.onTogglePreview}><Columns2 size={15} /><span className="tool-label">预览</span></button>
     <button title="切换专注写作" aria-label="切换专注写作" className={props.focusMode ? 'active' : ''} onClick={props.onToggleFocus}><Maximize2 size={15} /><span className="tool-label">专注</span></button>
@@ -852,6 +885,9 @@ function TasksPanel({ project, onRefresh }: { project: ProjectState; onRefresh()
   const [editing, setEditing] = useState<TaskDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [goalEditing, setGoalEditing] = useState<{ title: string; description: string; level: Goal['level'] } | null>(null);
+  const [goalSaving, setGoalSaving] = useState(false);
+  const [goalError, setGoalError] = useState('');
   const columns: Array<{ key: 'now' | 'next' | 'blocked' | 'terminal'; label: string }> = [{ key: 'now', label: '现在' }, { key: 'next', label: '下一步' }, { key: 'blocked', label: '阻塞' }, { key: 'terminal', label: '已结束' }];
   const tasksFor = (key: typeof columns[number]['key']) => key === 'terminal' ? project.tasks.filter((item) => ['completed', 'cancelled'].includes(item.status)) : project.tasks.filter((item) => item.status === key);
   const beginEdit = (task: CreativeTask) => setEditing({ id: task.id, title: task.title, description: task.description, level: task.level, status: task.status, kind: task.kind, assignee: task.assignee, priority: task.priority, whyNow: task.whyNow, completionCriteria: task.completionCriteria.join('\n'), links: task.links.join('\n'), cancellationReason: task.cancellationReason || '' });
@@ -869,9 +905,10 @@ function TasksPanel({ project, onRefresh }: { project: ProjectState; onRefresh()
   };
   return <div className="page tasks-page">
     <header className="page-header-row"><div><span className="eyebrow">目标与待办</span><h2>只把真正影响写作的事摆在眼前</h2></div><button className="primary" onClick={() => { setError(''); setEditing(emptyDraft()); }}><Plus size={16} />新任务</button></header>
-    <div className="goal-banner"><Target size={20} /><div><span>当前目标</span><b>{project.continueCard.goal?.title || '未设置'}</b><p>{project.continueCard.goal?.description}</p></div></div>
+    <div className="goal-banner"><Target size={20} /><div><span>当前目标</span><b>{project.continueCard.goal?.title || '未设置'}</b><p>{project.continueCard.goal?.description}</p><button onClick={() => { setGoalError(''); setGoalEditing({ title: project.continueCard.goal?.title || '', description: project.continueCard.goal?.description || '', level: project.continueCard.goal?.level || 'work' }); }}><Pencil size={12} />编辑目标</button></div></div>
     <div className="task-board">{columns.map((column) => <section key={column.key}><h3>{column.label}<span>{tasksFor(column.key).length}</span></h3>{tasksFor(column.key).map((task) => <article className={`task-card priority-${task.priority}`} key={task.id}><div className="task-meta"><span>{task.level} · {task.kind}</span><span>{task.assignee}</span></div><b>{task.title}</b><p>{task.whyNow || task.description || '尚未补充任务说明'}</p><small>{task.status === 'cancelled' ? `取消：${task.cancellationReason || '未记录原因'}` : `完成：${task.completionCriteria.join('；') || '待补充'}`}</small><div className="task-actions"><button onClick={() => { setError(''); beginEdit(task); }}><Pencil size={12} />编辑</button>{!['completed', 'cancelled'].includes(task.status) && <button onClick={async () => { await window.workbench.updateTask({ id: task.id, status: 'completed' }); await onRefresh(); }}><Check size={14} />完成</button>}{task.status === 'blocked' && <button onClick={async () => { await window.workbench.updateTask({ id: task.id, status: 'now' }); await onRefresh(); }}>解除阻塞</button>}</div></article>)}</section>)}</div>
     {editing && <Modal title={editing.id ? '编辑创作任务' : '新建创作任务'} onClose={() => setEditing(null)}><form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); void submit({ ...editing, title: String(data.get('title') || ''), description: String(data.get('description') || ''), level: String(data.get('level') || editing.level) as CreativeTask['level'], status: String(data.get('status') || editing.status) as CreativeTask['status'], kind: String(data.get('kind') || editing.kind) as CreativeTask['kind'], assignee: String(data.get('assignee') || editing.assignee) as CreativeTask['assignee'], priority: String(data.get('priority') || editing.priority) as CreativeTask['priority'], whyNow: String(data.get('whyNow') || ''), completionCriteria: String(data.get('completionCriteria') || ''), links: String(data.get('links') || ''), cancellationReason: String(data.get('cancellationReason') || '') }); }}><label>任务名称<input name="title" autoFocus value={editing.title} onChange={(event) => setEditing({ ...editing, title: event.target.value })} /></label><label>任务说明<textarea name="description" value={editing.description} onChange={(event) => setEditing({ ...editing, description: event.target.value })} placeholder="要完成什么，以及明确不做什么" /></label><div className="task-form-grid"><label>层级<Select name="level" value={editing.level} onChange={(event) => setEditing({ ...editing, level: event.target.value as CreativeTask['level'] })}><option value="series">系列</option><option value="work">作品</option><option value="volume">卷</option><option value="chapter">章</option><option value="scene">场景</option><option value="session">会话</option></Select></label><label>类型<Select name="kind" value={editing.kind} onChange={(event) => setEditing({ ...editing, kind: event.target.value as CreativeTask['kind'] })}><option value="writing">写作</option><option value="canon">设定</option><option value="research">考据</option><option value="revision">修订</option><option value="review">审校</option><option value="release">发布准备</option></Select></label><label>状态<Select name="status" value={editing.status} onChange={(event) => setEditing({ ...editing, status: event.target.value as CreativeTask['status'] })}><option value="now">现在</option><option value="next">下一步</option><option value="blocked">阻塞</option><option value="completed">已完成</option><option value="cancelled">已取消</option></Select></label><label>优先级<Select name="priority" value={editing.priority} onChange={(event) => setEditing({ ...editing, priority: event.target.value as CreativeTask['priority'] })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option><option value="critical">关键</option></Select></label><label>执行者<Select name="assignee" value={editing.assignee} onChange={(event) => setEditing({ ...editing, assignee: event.target.value as CreativeTask['assignee'] })}><option value="author">作者</option><option value="writer">Writer</option><option value="navigator">Navigator</option><option value="architect">Story Architect</option><option value="editor">Editor</option><option value="canon-keeper">Canon Keeper</option><option value="researcher">Researcher</option><option value="release-assistant">Release Assistant</option></Select></label></div><label>为什么现在做<input name="whyNow" value={editing.whyNow} onChange={(event) => setEditing({ ...editing, whyNow: event.target.value })} /></label><label>完成条件（每行一条）<textarea name="completionCriteria" value={editing.completionCriteria} onChange={(event) => setEditing({ ...editing, completionCriteria: event.target.value })} /></label><label>关联文件（每行一个仓库相对路径）<textarea name="links" value={editing.links} onChange={(event) => setEditing({ ...editing, links: event.target.value })} /></label>{editing.status === 'cancelled' && <label>取消原因<textarea name="cancellationReason" value={editing.cancellationReason} onChange={(event) => setEditing({ ...editing, cancellationReason: event.target.value })} /></label>}{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button type="button" onClick={() => setEditing(null)}>取消</button><button type="submit" className="primary" disabled={saving}>{saving ? '正在保存…' : editing.id ? '保存任务' : '创建任务'}</button></div></form></Modal>}
+    {goalEditing && <Modal title="编辑当前创作目标" onClose={() => setGoalEditing(null)}><form onSubmit={async (event) => { event.preventDefault(); if (goalSaving) return; const title = goalEditing.title.trim(); if (!title) { setGoalError('目标名称不能为空。'); return; } setGoalSaving(true); setGoalError(''); try { await window.workbench.updateGoal({ id: project.continueCard.goal?.id, title, description: goalEditing.description.trim(), level: goalEditing.level, authority: 'author-pinned', status: 'active' }); setGoalEditing(null); await onRefresh(); } catch (cause) { setGoalError(errorMessage(cause)); } finally { setGoalSaving(false); } }}><label>目标名称<input autoFocus value={goalEditing.title} onChange={(event) => setGoalEditing({ ...goalEditing, title: event.target.value })} /></label><label>层级<Select value={goalEditing.level} onChange={(event) => setGoalEditing({ ...goalEditing, level: event.target.value as Goal['level'] })}><option value="work">整部作品</option><option value="volume">当前卷</option><option value="chapter">当前章</option><option value="scene">当前场景</option></Select></label><label>目标说明<textarea value={goalEditing.description} onChange={(event) => setGoalEditing({ ...goalEditing, description: event.target.value })} /></label>{goalError && <p className="form-error">{goalError}</p>}<div className="modal-actions"><button type="button" onClick={() => setGoalEditing(null)}>取消</button><button type="submit" className="primary" disabled={goalSaving}>{goalSaving ? '正在保存…' : '保存目标'}</button></div></form></Modal>}
   </div>;
 }
 
@@ -1121,7 +1158,7 @@ function suggestedAgentRole(filePath?: string): AgentRole {
   return 'writer';
 }
 
-function AgentsPanel({ project, agents, events, buffer, contextPack, preset, onOpenPlan, onContext, onShowContext, onRefresh, onReloadAgents }: { project: ProjectState; agents: AgentAdapterInfo[]; events: AgentEvent[]; buffer: BufferState | null; contextPack: ContextPack | null; preset: { role: AgentRole; objective: string; nonce: number } | null; onOpenPlan(): void; onContext(pack: ContextPack): void; onShowContext(): void; onRefresh(): Promise<void>; onReloadAgents(): Promise<AgentAdapterInfo[]> }) {
+function AgentsPanel({ project, agents, events, buffer, contextPack, preset, onOpenPlan, onContext, onShowContext, onRefresh, onReloadAgents }: { project: ProjectState; agents: AgentAdapterInfo[]; events: AgentEvent[]; buffer: BufferState | null; contextPack: ContextPack | null; preset: { role: AgentRole; objective: string; nonce: number; navigationScope?: 'work' } | null; onOpenPlan(): void; onContext(pack: ContextPack): void; onShowContext(): void; onRefresh(): Promise<void>; onReloadAgents(): Promise<AgentAdapterInfo[]> }) {
   const initialRole = suggestedAgentRole(buffer?.path);
   const initialObjective = suggestedObjectiveForAgent(project.tasks, project.continueCard.focus, initialRole, buffer?.path);
   const [objective, setObjective] = useState(initialObjective); const [role, setRole] = useState<AgentRole>(initialRole); const [adapter, setAdapter] = useState<AgentAdapterInfo['id']>(agents.find((item) => item.available)?.id ?? 'codex'); const [allowNetwork, setAllowNetwork] = useState(false); const [running, setRunning] = useState(false); const [preparing, setPreparing] = useState(false); const [checking, setChecking] = useState(false); const [error, setError] = useState('');
@@ -1177,7 +1214,7 @@ function AgentsPanel({ project, agents, events, buffer, contextPack, preset, onO
       const completionCriteria = [...(currentTask?.completionCriteria.length ? currentTask.completionCriteria : fallbackCriteria), ...(role === 'writer' && planGaps.length ? ['全书路线仍有未定项；不得把候选设定当成已确认正典，新增高影响设定须报告作者决定。'] : [])];
       const task = currentTask || await window.workbench.updateTask({ title: objective.split(/\r?\n/)[0].slice(0, 96), description: objective, status: 'now', kind: role === 'researcher' ? 'research' : role === 'editor' ? 'review' : role === 'writer' ? 'writing' : 'revision', assignee: role, source: 'author', whyNow: '作者从 Agent 会话明确启动了这项工作。', aiPreAnalysis: `上下文包 ${pack.id} · ${pack.characters}/${pack.budget} 字符`, completionCriteria, links: role === 'writer' ? writerScope : buffer ? [buffer.path] : [] });
       taskId = task.id;
-      await window.workbench.runAgent({ adapterId: adapter, role, objective: effectiveObjective, creativeTaskId: task.id, scope: role === 'writer' ? writerScope : role === 'researcher' ? ['research'] : ['planning', 'canon'], completionCriteria, contextPack: pack, allowNetwork: role === 'researcher' && allowNetwork });
+      await window.workbench.runAgent({ adapterId: adapter, role, objective: effectiveObjective, creativeTaskId: task.id, scope: role === 'writer' ? writerScope : role === 'researcher' ? ['research'] : ['planning', 'canon'], completionCriteria, contextPack: pack, allowNetwork: role === 'researcher' && allowNetwork, navigationScope: role === 'architect' && preset?.navigationScope === 'work' && objective === preset.objective ? 'work' : undefined });
       await onRefresh();
     } catch (cause) { const message = errorMessage(cause); setError(message); if (taskId) await window.workbench.updateTask({ id: taskId, status: 'cancelled', cancellationReason: `Agent 未启动：${message}` }).catch(() => {}); await onRefresh(); } finally { setRunning(false); }
   };

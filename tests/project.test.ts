@@ -34,6 +34,23 @@ describe('可迁移作品仓库', () => {
     expect(events).toContain('task.upsert');
   });
 
+  it('从新目录绝对路径创建作品，拒绝覆盖已有 Git 仓库内容', async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-new-root-'));
+    roots.push(base);
+    const novelRoot = path.join(base, '待创建的新书');
+    const project = new ProjectService('new-root');
+    const created = await project.create({ root: novelRoot, title: '新书', kind: 'novel' });
+    expect(created.root).toBe(novelRoot);
+    expect((await readFile(path.join(novelRoot, 'planning', '全书路线.md'), 'utf8'))).toContain('主角成长');
+
+    const existing = path.join(base, '已有内容');
+    await exec('git', ['init', existing], base);
+    await writeFile(path.join(existing, 'README.md'), '保留原文件');
+    await expect(new ProjectService('must-not-overwrite').create({ root: existing, title: '误建', kind: 'novel' })).rejects.toThrow('目标目录已有内容');
+    expect(await readFile(path.join(existing, 'README.md'), 'utf8')).toBe('保留原文件');
+    await expect(new ProjectService('relative').create({ root: 'relative-path', title: '误建', kind: 'novel' })).rejects.toThrow('绝对路径');
+  });
+
   it('把仅本地提交策略写进作品清单并在重新打开后恢复', async () => {
     const { root, project } = await fixture();
     const updated = await project.updateGitPolicy('local-only');
@@ -84,6 +101,27 @@ describe('可迁移作品仓库', () => {
     expect(restored.manifest.projectId).toBe(state.manifest.projectId);
     expect(restored.tasks.map((item) => item.title)).toContain('完成开书最小准备');
     expect(restored.continueCard.lastFile).toBe('manuscript/第一章.md');
+  });
+
+  it('继续创作跟随正在执行的章节任务，不停留在旧焦点或最近打开的研究文件', async () => {
+    const { project } = await fixture();
+    const before = await project.state();
+    const current = before.tasks.find((task) => task.status === 'now')!;
+    await project.eventStore.append('project.position', { filePath: 'research/README.md', stage: '开篇和前三章', focus: '旧建议：先审议路线' }, 'system');
+    await project.eventStore.append('task.upsert', { ...current, title: '第一章：完成第一次救援', level: 'chapter', assignee: 'writer', links: ['manuscript/第一章.md'], updatedAt: new Date().toISOString() } as never, 'author');
+    const updated = await project.state();
+    expect(updated.continueCard).toMatchObject({ lastFile: 'manuscript/第一章.md', focus: '第一章：完成第一次救援' });
+    expect(updated.continueCard.location).toContain('第一章');
+  });
+
+  it('当前任务完成后不继续显示旧章节的审查焦点', async () => {
+    const { project } = await fixture();
+    const state = await project.state();
+    const current = state.tasks.find((task) => task.status === 'now')!;
+    await project.eventStore.append('task.upsert', { ...current, status: 'completed', updatedAt: new Date().toISOString() } as never, 'observer');
+    await project.eventStore.append('project.position', { filePath: 'manuscript/第一章.md', stage: '逐章创作、观察和修订', focus: '审查第一章并推进下一章' }, 'agent');
+    const updated = await project.state();
+    expect(updated.continueCard.focus).toBe(updated.continueCard.goal?.title);
   });
 
   it('作者档案候选与证据随仓库迁移，但状态仍明确区分是否生效', async () => {
@@ -212,6 +250,7 @@ describe('可迁移作品仓库', () => {
     state = await project.addWork('第二部');
     expect(state.manifest.works).toHaveLength(2);
     expect(state.continueCard.lastFile).toBe('manuscript/work-2/第一章.md');
+    expect(state.continueCard.focus).toContain('第二部');
     expect(state.planningAudit.items.find((item) => item.key === 'promise')?.status).toBe('missing');
     state = await project.activateWork('work-1');
     expect(state.manifest.activeWorkId).toBe('work-1');

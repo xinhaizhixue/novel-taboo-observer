@@ -8,6 +8,11 @@ describe('全书路线提醒', () => {
     expect(audit.attention).toHaveLength(6);
   });
 
+  it('一段较长的开书灵感不能冒充终局', () => {
+    const audit = auditPlanning([{ path: 'planning/滚动规划.md', content: '# 滚动规划\n\n## 全书方向与结局假设\n\n每晚零点，城市少一条街；主角从一处小小的安全区起步，把迷失的人带回灯下。\n' }]);
+    expect(audit.items.find((item) => item.key === 'ending')?.status).toBe('missing');
+  });
+
   it('有开篇和四段骨架时仍指出成长、世界答案与终局缺口', () => {
     const audit = auditPlanning([
       { path: 'canon/故事正典.md', content: '# 故事正典\n\n## 开书状态\n\n末日求生，重点是资源危机与团队抉择。\n\n## 世界\n\n异常海潮的原因未知。\n' },

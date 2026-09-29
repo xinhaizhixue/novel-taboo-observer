@@ -12,6 +12,27 @@ const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe('Agent 中断恢复', () => {
+  it('全书规划 Agent 的候选保留作品级范围，等待作者选定', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-outline-project-'));
+    const appData = await mkdtemp(path.join(os.tmpdir(), 'novel-observer-outline-data-'));
+    roots.push(root, appData);
+    const project = new ProjectService('outline-session');
+    await project.create({ root, title: '路线测试', kind: 'novel' });
+    const route = { title: '第一路线', pitch: '先救人，再建立长期安全区。', effect: '阶段回报明确', causalChain: ['救人', '扩建'], tradeoffs: ['需要补给'], risks: ['重复'], followUpImpact: '进入下一卷', requiredSetup: ['第一盏灯'], firstChapterGoal: '救回第一人' };
+    const finalMessage = JSON.stringify({ title: '全书路线候选', diagnosis: '尚无大纲', highImpactQuestions: ['终局是什么？'], recommendedGoal: '建议先审议路线', routes: [route, { ...route, title: '第二路线' }] });
+    const adapter: AgentAdapter = {
+      id: 'codex',
+      info: async () => ({ id: 'codex', name: 'Fixture', command: 'fixture', available: true, capabilities: { persistentSession: false, resumeSession: false, appendMessage: false, cancel: true, structuredOutput: true, fileModification: false, interAgentMessaging: false, approvalEvents: false, usage: false } }),
+      run: () => ({ process: { kill: () => true } as never, completed: Promise.resolve({ sessionId: 'outline-session', finalMessage, exitCode: 0, raw: [] }) })
+    };
+    const hub = new AgentHub(appData, project, new AuthorProfileStore(appData), [adapter]);
+    const task = await hub.runTask({ adapterId: 'codex', role: 'architect', navigationScope: 'work', objective: '提出全书规划', scope: ['planning', 'canon'], completionCriteria: [] });
+    await hub.waitForTask(task.id);
+    const state = await project.state();
+    expect(state.proposals[0]).toMatchObject({ status: 'pending', planningScope: 'work', title: '全书路线候选' });
+    expect(state.proposals[0].routes).toHaveLength(2);
+  });
+
   it('识别目录与子文件的 Writer 修改范围重叠', () => {
     expect(scopesOverlap(['manuscript'], ['manuscript/第一卷/第一章.md'])).toBe(true);
     expect(scopesOverlap(['manuscript/第一卷'], ['manuscript/第二卷'])).toBe(false);

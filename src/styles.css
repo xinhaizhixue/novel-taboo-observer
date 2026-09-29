@@ -276,6 +276,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .goal-banner span { font-size: 10px; color: var(--muted); }
 .goal-banner b { margin-top: 2px; font: 600 15px 'Noto Serif SC'; }
 .goal-banner p { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+.goal-banner button { display: inline-flex; align-items: center; gap: 4px; margin-top: 10px; padding: 4px 0; border: 0; background: transparent; color: var(--accent-2); cursor: pointer; font-size: 11px; }
 .task-board { min-width: 780px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .task-board > section { padding: 10px; border-radius: 7px; background: #eee9de; min-height: 280px; }
 .task-board > section > h3, .fact-grid section > h3 { display: flex; justify-content: space-between; margin: 0 0 9px; font-size: 12px; }
