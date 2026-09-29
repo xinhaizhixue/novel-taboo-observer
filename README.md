@@ -1,3 +1,4 @@
+# 写在最前面，拒绝白嫖，请留下你的star
 # 叙舟 · 长篇写作工作台
 
 一个以 Git 仓库承载作品、以本地桌面工作台承载交互、桥接 Codex CLI / Claude Code / TraeX CLI 等通用 Agent 的长篇网文 AI 写作系统。
