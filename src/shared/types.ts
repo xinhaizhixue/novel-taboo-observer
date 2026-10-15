@@ -74,6 +74,8 @@ export interface CreativeTask {
   authorDecision: string;
   agentWork: string;
   completionCriteria: string[];
+  /** A model review may finish, but this task closes only after the author can read the prose. */
+  requiresAuthorReadability?: boolean;
   links: string[];
   dependencies: string[];
   createdAt: string;
@@ -366,7 +368,18 @@ export interface AgentRunRequest {
   navigationScope?: 'work';
 }
 
-export interface ColdReading { readings: Array<{ filePath: string; quote: string; understanding: string; dialogueChecks?: Array<{quote: string; intendedAction: string; basis: string; priorEvidence: string}>; frictions: Array<{ quote: string; difficulty: string; suggestion: string }> }> }
+export interface SceneTrace {
+  windowIndex: number;
+  quote: string;
+  placeAndPeople: string;
+  immediateGoal: string;
+  actionAndResult: string;
+  bridge: string;
+  clarity: 'clear' | 'unclear';
+  readerQuestion: string;
+}
+
+export interface ColdReading { readings: Array<{ filePath: string; quote: string; understanding: string; sceneTrace?: SceneTrace[]; dialogueChecks?: Array<{quote: string; intendedAction: string; basis: string; priorEvidence: string}>; frictions: Array<{ quote: string; difficulty: string; suggestion: string }> }> }
 
 export interface ReviewQuoteNormalization { filePath: string; originalQuote: string; quote: string; phase: 'reading' | 'context' }
 

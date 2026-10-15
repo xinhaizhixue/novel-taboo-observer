@@ -1,9 +1,48 @@
 import path from 'node:path';
-import type { AnalysisSnapshot, ObserverRunRequest, ReviewAssessment, ReviewBundle, ReviewDimension, ReviewReport } from '../../src/shared/types.js';
+import type { AnalysisSnapshot, ColdReading, ObserverRunRequest, ReviewAssessment, ReviewBundle, ReviewDimension, ReviewReport } from '../../src/shared/types.js';
 import { REVIEW_DIMENSIONS } from '../../src/shared/constants.js';
 import { compareNaturalPath } from '../../src/shared/natural-sort.js';
 import type { ProjectService } from './project.js';
 import { hashText, now, uid } from './utils.js';
+
+/** Fixed coverage windows keep a cold reader from reviewing only one convenient exchange. */
+export function readingWindows(content: string) {
+  const count = Math.min(8, Math.max(1, Math.ceil(content.length / 850)));
+  return Array.from({ length: count }, (_, index) => {
+    const start = Math.floor(content.length * index / count);
+    const end = Math.floor(content.length * (index + 1) / count);
+    return { index: index + 1, start, end, content: content.slice(start, end) };
+  });
+}
+
+export function coldReadingGaps(reading: ColdReading, sources: AnalysisSnapshot[]) {
+  const gaps: string[] = [];
+  for (const source of sources) {
+    const matches = reading.readings?.filter((row) => row.filePath === source.filePath) ?? [];
+    const row = matches[0];
+    if (matches.length !== 1 || !row?.quote?.trim() || !source.content.includes(row.quote)) {
+      gaps.push(`${source.filePath}缺少逐字匹配的初读记录。`);
+      continue;
+    }
+    const minRetell = Math.min(80, Math.max(8, Math.floor(source.content.length / 4)));
+    if ((row.understanding?.trim().length ?? 0) < minRetell) gaps.push(`${source.filePath}只复述了局部，未重述整章行动。`);
+    if (!Array.isArray(row.frictions) || row.frictions.some((item) => !item.quote?.trim() || !source.content.includes(item.quote) || !item.difficulty?.trim() || !item.suggestion?.trim())) gaps.push(`${source.filePath}的初读疑点缺少有效引文或说明。`);
+    const windows = readingWindows(source.content);
+    const traces = row.sceneTrace ?? [];
+    if (traces.length !== windows.length) gaps.push(`${source.filePath}没有覆盖全部${windows.length}个阅读段。`);
+    for (const window of windows) {
+      const entries = traces.filter((item) => item.windowIndex === window.index);
+      const trace = entries[0];
+      const fields = trace && [trace.placeAndPeople, trace.immediateGoal, trace.actionAndResult, trace.bridge];
+      if (entries.length !== 1 || !trace?.quote?.trim() || !window.content.includes(trace.quote) || !fields?.every((value) => typeof value === 'string' && value.trim()) || !['clear', 'unclear'].includes(trace.clarity)) {
+        gaps.push(`${source.filePath}第${window.index}段缺少可核对的场景位置与因果追踪。`);
+      } else if (trace.clarity === 'unclear' && (!trace.readerQuestion.trim() || !(row.frictions || []).some((item) => item.quote === trace.quote))) {
+        gaps.push(`${source.filePath}第${window.index}段读不清，却没有对应的初读疑点。`);
+      }
+    }
+  }
+  return gaps;
+}
 
 /** Read whole scenes in human chapter order, never relevance-ranked fragments. */
 export async function buildReviewBundle(project: ProjectService, input: ObserverRunRequest, budget = 48_000): Promise<ReviewBundle> {
@@ -15,7 +54,7 @@ export async function buildReviewBundle(project: ProjectService, input: Observer
   if (!all.includes(primary.filePath)) all.push(primary.filePath);
   all.sort(compareNaturalPath);
   const index = all.indexOf(primary.filePath);
-  const window = Math.min(5, Math.max(3, Math.floor(input.reviewWindow ?? 5)));
+  const window = Math.min(5, Math.max(2, Math.floor(input.reviewWindow ?? 5)));
   const requestedPaths = scope === 'sequence' ? all.slice(Math.max(0, index - window + 1), index + 1) : all.slice(Math.max(0, index - 1), index + 2);
   const sources: AnalysisSnapshot[] = [];
   const omittedPaths: string[] = [];
@@ -33,25 +72,29 @@ export async function buildReviewBundle(project: ProjectService, input: Observer
   }
   sources.sort((a, b) => compareNaturalPath(a.filePath, b.filePath));
   if (omittedPaths.length) gaps.push('有整章未能纳入，相关维度只能标为资料不足，不能宣布整体没有问题。');
-  if (scope === 'sequence' && sources.length < 3) gaps.push('不足三章，当前只能评价已有开篇，尚不能判断连续多章的重复与长期推进。');
+  if (scope === 'sequence' && sources.length < 2) gaps.push('不足两章，无法完成跨章比较；请使用本章精读，或在有相邻正文后再联合审读。');
   return { scope, sources, requestedPaths, omittedPaths, characters, budget, gaps };
 }
 
 export function pendingReview(input: ObserverRunRequest, taskId: string): ReviewReport {
   const bundle = input.bundle!;
-  return { protocolVersion: 3, coldReading: input.coldReading, quoteNormalizations: input.quoteNormalizations, chapterReadings: [], id: input.reportId!, taskId, scope: bundle.scope, status: 'running', primaryFile: input.snapshot.filePath, createdAt: input.snapshot.createdAt, summary: '正在逐项审阅；尚无结论。', sources: bundle.sources.map(({ filePath, hash, referenceOnly }) => ({ filePath, hash, referenceOnly })), omittedPaths: bundle.omittedPaths, gaps: [...bundle.gaps], assessments: [], commentIds: [], unanchored: [], sourceWriterTaskId: input.sourceWriterTaskId, writingRequirements: input.writingRequirements };
+  return { protocolVersion: 4, coldReading: input.coldReading, quoteNormalizations: input.quoteNormalizations, chapterReadings: [], id: input.reportId!, taskId, scope: bundle.scope, status: 'running', primaryFile: input.snapshot.filePath, createdAt: input.snapshot.createdAt, summary: '正在逐项审阅；尚无结论。', sources: bundle.sources.map(({ filePath, hash, referenceOnly }) => ({ filePath, hash, referenceOnly })), omittedPaths: bundle.omittedPaths, gaps: [...bundle.gaps], assessments: [], commentIds: [], unanchored: [], sourceWriterTaskId: input.sourceWriterTaskId, writingRequirements: input.writingRequirements };
 }
 
 /** Treat the model's coverage claims as untrusted: validate every quoted source. */
 export function finishReview(report: ReviewReport, bundle: ReviewBundle, parsed: Record<string, unknown>, commentIds: string[], unanchored: ReviewReport['unanchored']): ReviewReport {
   const gaps = [...report.gaps];
-  if (report.protocolVersion === 3 && !report.coldReading) gaps.push('缺少独立正文阅读记录。');
+  if (report.protocolVersion === 4 && !report.coldReading) gaps.push('缺少覆盖全章的独立正文阅读记录。');
+  if (report.protocolVersion === 4 && report.coldReading) gaps.push(...coldReadingGaps(report.coldReading, bundle.sources.filter((source) => !source.referenceOnly)));
   const resolutions = Array.isArray(parsed.coldResolutions) ? parsed.coldResolutions as Array<Record<string, unknown>> : [];
   const comments = Array.isArray(parsed.comments) ? parsed.comments as Array<Record<string, unknown>> : [];
   for (const reading of report.coldReading?.readings ?? []) for (const friction of reading.frictions) {
     const rows = resolutions.filter(row => row.filePath === reading.filePath && row.quote === friction.quote);
     const row = rows[0];
     if (rows.length !== 1 || !String(row.reason ?? '').trim() || !['retain', 'dismiss'].includes(String(row.decision)) || (row.decision === 'retain' && !comments.some(comment => comment.filePath === reading.filePath && String(comment.quote ?? '').includes(friction.quote)))) gaps.push(`${reading.filePath}的首次阅读疑点尚未逐条处理：${friction.quote}`);
+  }
+  for (const reading of report.coldReading?.readings ?? []) for (const trace of reading.sceneTrace ?? []) {
+    if (trace.clarity === 'unclear' && !comments.some((comment) => comment.filePath === reading.filePath && String(comment.quote ?? '').includes(trace.quote))) gaps.push(`${reading.filePath}第${trace.windowIndex}段读不清的位置或因果没有形成可处理意见。`);
   }
 
   const readings = Array.isArray(parsed.chapterReadings) ? parsed.chapterReadings as Array<Record<string, unknown>> : [];
@@ -140,7 +183,7 @@ export async function addReviewReferences(project: ProjectService, bundle: Revie
 }
 
 export function writerReviewOutcome(writerId: string, changedFiles: string[], reports: ReviewReport[]) {
-  const checked = new Set(reports.filter((report) => report.sourceWriterTaskId === writerId && report.protocolVersion === 3 && Boolean(report.coldReading) && !report.stale && report.status === 'clear' && report.taskAlignment?.status === 'met').flatMap((report) => report.sources.filter((source) => !source.referenceOnly).map((source) => source.filePath)));
+  const checked = new Set(reports.filter((report) => report.sourceWriterTaskId === writerId && report.protocolVersion === 4 && Boolean(report.coldReading) && !report.stale && report.status === 'clear' && report.taskAlignment?.status === 'met').flatMap((report) => report.sources.filter((source) => !source.referenceOnly).map((source) => source.filePath)));
   const missing = changedFiles.filter((file) => !checked.has(file));
   return { complete: changedFiles.length > 0 && missing.length === 0, missing };
 }

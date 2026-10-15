@@ -39,7 +39,13 @@ async function fixture() {
       if (!options.pureText && options.prompt.includes('你是独立的长篇网文 Observer')) finish(result(cleanReview));
       else runs.push({ options, finish: (text = cleanReview) => {
         if (options.pureText) {
-          const readings = [...options.prompt.matchAll(/### ([^\n]+)\n([\s\S]*?)(?=\n\n### |$)/g)].map(m => ({ filePath: m[1], quote: m[2].trim(), understanding: '已阅读', frictions: [] }));
+          const windows = [...options.prompt.matchAll(/### ([^\n]+?) · 阅读段 (\d+)\/\d+ · UTF-16 \d+-\d+\n([\s\S]*?)(?=\n\n### |$)/g)];
+          const paths = [...new Set(windows.map((match) => match[1]))];
+          const readings = paths.map((filePath) => {
+            const parts = windows.filter((match) => match[1] === filePath);
+            return { filePath, quote: parts[0][3].trim(), understanding: '逐段核对这一章从开场到结尾的行动、人物位置、目的和结果，现有夹具只用于检验并发归因，不评价文学质量。',
+              sceneTrace: parts.map((part) => ({ windowIndex: Number(part[2]), quote: part[3].trim(), placeAndPeople: '人物位于当前场景', immediateGoal: '完成眼前任务', actionAndResult: '动作带来结果', bridge: '承接相邻阅读段', clarity: 'clear', readerQuestion: '' })), dialogueChecks: [], frictions: [] };
+          });
           finish(result(JSON.stringify({ readings })));
         } else finish(result(text));
       } });

@@ -36,8 +36,14 @@ ${kind === 'claude' ? `if (args[0] === 'auth') { log(); process.stdout.write(JSO
 function finish(prompt) {
   log(prompt);
   if (prompt.includes('你是第一次阅读这篇小说')) {
-    const matches = [...prompt.matchAll(/### ([^\\n]+)\\n([\\s\\S]*?)(?=\\n\\n### |$)/g)];
-    const result = JSON.stringify({ readings: matches.map(m => ({ filePath: m[1], quote: m[2].trim(), understanding: '已逐段阅读。', frictions: [] })) });
+    const windows = [...prompt.matchAll(/### ([^\\n]+?) · 阅读段 (\\d+)\\/\\d+ · UTF-16 \\d+-\\d+\\n([\\s\\S]*?)(?=\\n\\n### |$)/g)];
+    const paths = [...new Set(windows.map(m => m[1]))];
+    const readings = paths.map(filePath => {
+      const parts = windows.filter(m => m[1] === filePath);
+      return { filePath, quote: parts[0][3].trim(), understanding: '逐段复述开场、人物位置、眼前目标、行动经过和结尾结果；此夹具只验证 Agent 进程桥接与审阅输出，不作为文学质量判断。',
+        sceneTrace: parts.map(m => ({ windowIndex: Number(m[2]), quote: m[3].trim(), placeAndPeople: '人物位于当前场景', immediateGoal: '完成眼前行动', actionAndResult: '动作带来结果', bridge: '衔接相邻阅读段', clarity: 'clear', readerQuestion: '' })), dialogueChecks: [], frictions: [] };
+    });
+    const result = JSON.stringify({ readings });
     const out = args.indexOf('-o'); if (out >= 0) fs.writeFileSync(args[out + 1], result);
     process.stdout.write(JSON.stringify({ type: 'result', session_id: 'cold-session', result }) + String.fromCharCode(10));
     return;

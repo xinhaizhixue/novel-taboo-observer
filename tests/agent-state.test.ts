@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AgentHub, scopesOverlap } from '../electron/main/agents/hub.js';
 import { AuthorProfileStore } from '../electron/main/profile.js';
 import { ProjectService } from '../electron/main/project.js';
+import { hashText } from '../electron/main/utils.js';
 import type { AgentTaskRecord, ReviewReport } from '../src/shared/types.js';
 import type { AgentAdapter } from '../electron/main/agents/adapter.js';
 
@@ -98,5 +99,27 @@ describe('Agent 中断恢复', () => {
     }
     await hub.reconcileInterrupted();
     expect((await reopened.state()).reviews).toEqual(reviews);
+  });
+
+  it('作者退回的可读性任务不会因模型报告 clear 而自动完成', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'novel-reader-gate-')); roots.push(root);
+    const project = new ProjectService('reader-gate');
+    await project.create({ root: path.join(root, 'novel'), title: '读感验收', kind: 'novel' });
+    const state = await project.state();
+    const task = state.tasks.find((item) => item.status === 'now')!;
+    await project.eventStore.append('task.upsert', { ...task, requiresAuthorReadability: true } as never, 'author');
+    const file = await project.readFile('manuscript/第一章.md');
+    const writer: AgentTaskRecord = { id: 'reader-writer', adapterId: 'codex', role: 'writer', state: 'completed', objective: '重写', creativeTaskId: task.id, scope: [file.path], completionCriteria: [], startedAt: new Date().toISOString(), startHashes: {}, changedFiles: [file.path] };
+    await project.eventStore.append('agent.task', writer as never, 'agent');
+    const report: ReviewReport = { id: 'reader-report', taskId: 'reviewer', sourceWriterTaskId: writer.id, protocolVersion: 4, coldReading: { readings: [{ filePath: file.path, quote: file.content, understanding: '已逐段阅读。', sceneTrace: [], frictions: [] }] }, scope: 'chapter', status: 'clear', primaryFile: file.path, createdAt: new Date().toISOString(), summary: '模型未发现问题', sources: [{ filePath: file.path, hash: hashText(file.content) }], omittedPaths: [], gaps: [], taskAlignment: { status: 'met', finding: '要求已满足', evidence: [{ filePath: file.path, quote: file.content }] }, assessments: [], commentIds: [], unanchored: [] };
+    await project.eventStore.append('review.report', report as never, 'observer');
+    const hub = new AgentHub(path.join(root, 'data'), project, new AuthorProfileStore(path.join(root, 'data')));
+    await (hub as any).settleWriterTask(writer.id);
+    const blocked = (await project.state()).tasks.find((item) => item.id === task.id)!;
+    expect(blocked).toMatchObject({ status: 'blocked', requiresAuthorReadability: true });
+    expect(blocked.agentWork).toContain('作者顺读');
+    await project.eventStore.append('task.upsert', { ...blocked, status: 'completed' } as never, 'author');
+    await (hub as any).settleWriterTask(writer.id);
+    expect((await project.state()).tasks.find((item) => item.id === task.id)?.status).toBe('completed');
   });
 });

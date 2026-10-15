@@ -18,7 +18,7 @@ async function fixture() {
   const file = await project.readFile('manuscript/第五章.md');
   const input: ObserverRunRequest = { adapterId: 'codex', mode: 'manual', reviewScope: 'sequence', reviewWindow: 5, reportId: 'test-report', snapshot: { id: 'snapshot', filePath: file.path, hash: file.hash, content: file.content, editorVersion: 1, createdAt: new Date().toISOString() } };
   const bundle = await buildReviewBundle(project, input);
-  input.coldReading = { readings: bundle.sources.map(s => ({filePath:s.filePath,quote:s.content,understanding:'已阅读',frictions:[]})) };
+  input.coldReading = { readings: bundle.sources.map(s => ({filePath:s.filePath,quote:s.content,understanding:'本段交代人物的眼前行动，并为后续场景提供衔接。',sceneTrace:[{windowIndex:1,quote:s.content,placeAndPeople:'人物位于当前场景',immediateGoal:'完成眼前行动',actionAndResult:'动作引出下一状态',bridge:'与相邻段落继续衔接',clarity:'clear' as const,readerQuestion:''}],frictions:[]})) };
   return { project, input: { ...input, bundle }, bundle };
 }
 function chapterReadings(input: ObserverRunRequest) { return input.bundle!.sources.map((source) => ({ filePath: source.filePath, change: '本章的场景推进。', evidence: [{ filePath: source.filePath, quote: source.content }] })); }
@@ -46,6 +46,22 @@ describe('有证据的文学审阅', () => {
     expect(bundle.sources.map((source) => source.filePath)).toEqual(['manuscript/第一章.md', 'manuscript/第2章.md', 'manuscript/第三章.md', 'manuscript/第4章.md', 'manuscript/第五章.md']);
     expect(bundle.sources[0].content).toContain('她把杯子放下。');
     expect(bundle.gaps).toEqual([]);
+  });
+  it('两章联合审读只要求已选两章的完整比较，单章仍不能冒充跨章审读', async () => {
+    const { project, input } = await fixture();
+    const second = await project.readFile('manuscript/第2章.md');
+    const request = { ...input, reviewWindow: 2, snapshot: { ...input.snapshot, filePath: second.path, content: second.content, hash: second.hash } };
+    const bundle = await buildReviewBundle(project, request);
+    expect(bundle.sources.map((source) => source.filePath)).toEqual(['manuscript/第一章.md', 'manuscript/第2章.md']);
+    expect(bundle.gaps).toEqual([]);
+    const evidence = bundle.sources.map((source) => ({ filePath: source.filePath, quote: source.content }));
+    const review = { ...request, bundle, coldReading: { readings: input.coldReading!.readings.filter((reading) => bundle.sources.some((source) => source.filePath === reading.filePath)) } };
+    const parsed = { assessments: Object.keys(REVIEW_DIMENSIONS).map((dimension) => ({ dimension, status: 'clear', finding: '仅比较这两章的衔接与推进。', evidence })), chapterReadings: chapterReadings(review) };
+    expect(finishReview(pendingReview(review, 'two-chapter-review'), bundle, parsed, [], []).status).toBe('clear');
+    const first = bundle.sources[0];
+    const single = await buildReviewBundle(project, { ...request, snapshot: first });
+    expect(single.sources).toHaveLength(1);
+    expect(single.gaps.some((gap) => gap.includes('无法完成跨章比较'))).toBe(true);
   });
   it('当前未保存快照优先，超预算整章明确列缺口，拒绝伪造快照哈希', async () => {
     const { project, input } = await fixture();
@@ -116,6 +132,7 @@ it('手动复查和自动审阅共用完成条件，必须覆盖所有改动章�
   const { input, bundle } = await fixture();
   const report = finishReview(pendingReview({ ...input, sourceWriterTaskId: 'writer' }, 'review'), bundle, { assessments: completeAssessments(input), chapterReadings: chapterReadings(input), taskAlignment: { status: 'met', finding: '已核对', evidence: [{ filePath: input.snapshot.filePath, quote: '门外的街道空了。' }] } }, [], []);
   expect(writerReviewOutcome('writer', ['manuscript/第五章.md'], [report]).complete).toBe(true);
+  expect(writerReviewOutcome('writer', ['manuscript/第五章.md'], [{ ...report, protocolVersion: 3 }]).complete).toBe(false);
   expect(writerReviewOutcome('writer', ['manuscript/第五章.md', 'manuscript/第6章.md'], [report]).complete).toBe(false);
   expect(writerReviewOutcome('writer', ['manuscript/第五章.md'], [{ ...report, stale: true }]).complete).toBe(false);
   expect(writerReviewOutcome('different-writer', ['manuscript/第五章.md'], [report]).complete).toBe(false);
@@ -159,7 +176,8 @@ it('新的任务上下文包含有效审阅观察，并排除改稿后过期的�
 
 it('首次阅读疑点不能被第二遍静默丢弃，保留须有评论，排除须给理由', async () => {
  const {input,bundle}=await fixture();const report=pendingReview(input,'cold-test');
- report.coldReading={readings:[...input.coldReading!.readings.filter(r=>r.filePath!==input.snapshot.filePath),{filePath:input.snapshot.filePath,quote:'门外的街道空了。',understanding:'读到街道无人',frictions:[{quote:'门外的街道空了。',difficulty:'衔接有疑点',suggestion:'核对前文'}]}]};
+ const original=input.coldReading!.readings.find(r=>r.filePath===input.snapshot.filePath)!;
+ report.coldReading={readings:[...input.coldReading!.readings.filter(r=>r.filePath!==input.snapshot.filePath),{...original,quote:'门外的街道空了。',frictions:[{quote:'门外的街道空了。',difficulty:'衔接有疑点',suggestion:'核对前文'}]}]};
  const parsed={assessments:completeAssessments(input),chapterReadings:chapterReadings(input)};
  expect(finishReview(report,bundle,parsed,[],[]).status).toBe('incomplete');
  const row={filePath:input.snapshot.filePath,quote:'门外的街道空了。',decision:'dismiss',reason:'前文已明确离开室内，没有缺少动作。'};

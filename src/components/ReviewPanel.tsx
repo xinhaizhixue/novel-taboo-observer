@@ -1,8 +1,9 @@
 import { Select } from './Select';
 import { useEffect, useState } from 'react';
 import { REVIEW_DIMENSIONS } from '../shared/constants';
-import type { AgentAdapterInfo, ObserverComment, ProjectState, ReviewScope, Settings } from '../shared/types';
+import type { AgentAdapterInfo, ObserverComment, ProjectState, ReviewReport, ReviewScope, Settings } from '../shared/types';
 import { fileTitle } from '../lib/format';
+import { readabilityRewriteTask } from '../lib/readability-task';
 
 export function ReviewPanel({ project, currentFile, settings, agents, adapter, onAdapter, onRun, onCancel, onOpen, onComment, onSettings, onRefresh }: {
   project: ProjectState; currentFile?: string; settings: Settings; agents: AgentAdapterInfo[]; adapter: AgentAdapterInfo['id'];
@@ -17,37 +18,76 @@ export function ReviewPanel({ project, currentFile, settings, agents, adapter, o
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [rejecting, setRejecting] = useState<string | null>(null);
+  const [readerReason, setReaderReason] = useState('');
+  const [readerError, setReaderError] = useState('');
+  const [submittingRejection, setSubmittingRejection] = useState(false);
   useEffect(() => { if (!files.some((item) => item.path === file)) setFile(files.at(-1)?.path || ''); }, [file, files]);
   const reports = [...(project.reviews ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const running = project.agentTasks.filter((task) => task.role === 'observer' && task.state === 'running');
-  const covered = new Set(reports.filter((report) => report.protocolVersion === 3 && Boolean(report.coldReading) && !report.stale && ['clear', 'findings'].includes(report.status)).flatMap((report) => report.sources.filter((source) => !source.referenceOnly).map((source) => source.filePath)));
+  const covered = new Set(reports.filter((report) => report.protocolVersion === 4 && Boolean(report.coldReading) && !report.stale && ['clear', 'findings'].includes(report.status)).flatMap((report) => report.sources.filter((source) => !source.referenceOnly).map((source) => source.filePath)));
   const statuses = { running: '审阅中', findings: '发现问题', clear: '本次未发现实质问题', incomplete: '检查不完整', failed: '审阅失败', cancelled: '已取消' };
+  const authorRewriteTask = (report: ReviewReport) => project.tasks.find((task) => task.requiresAuthorReadability && !['completed', 'cancelled'].includes(task.status) && task.links.some((file) => report.sources.some((source) => source.filePath === file && !source.referenceOnly)));
+  const submitReaderRejection = async (report: ReviewReport) => {
+    const reason = readerReason.trim();
+    if (!reason) { setReaderError('请写下哪里读不懂，Writer 才能按读感重写。'); return; }
+    setSubmittingRejection(true); setReaderError('');
+    try {
+      await windowApi().updateTask(readabilityRewriteTask(report, reason));
+      setRejecting(null); setReaderReason('');
+      await onRefresh();
+    } catch (cause) { setReaderError(String(cause)); }
+    finally { setSubmittingRejection(false); }
+  };
   return <div className="page literary-review-page">
-    <header><span className="eyebrow">文学审阅</span><h2>句子接得上，故事才走得远</h2><p>先独立读正文，再结合上下文复核。旧版报告不计入新的两遍审读覆盖。同时检查文字连贯、对话、语言自然度、人物选择、节奏回报和事实连续性。没有评论，不等于完成了检查。</p></header>
+    <header><span className="eyebrow">文学审阅</span><h2>句子接得上，故事才走得远</h2><p>先盲读并逐段复述人物位置、目标、行动和结果，再结合上下文核对六项。旧协议报告不计入当前覆盖。模型没有评论或六项均已填写，都不能代替作者实际顺读。</p></header>
     <section className="review-compose">
       <label>结束章节<Select aria-label="审阅结束章节" value={file} onChange={(event) => setFile(event.target.value)}>{files.map((item) => <option key={item.path} value={item.path}>{item.path.replace(/^manuscript\//, '')}</option>)}</Select></label>
       {currentFile && file !== currentFile && <button onClick={() => setFile(currentFile)}>使用当前打开章节</button>}
       <label>审阅范围<Select aria-label="审阅范围" value={scope} onChange={(event) => setScope(event.target.value as ReviewScope)}><option value="chapter">本章精读，参照前后章</option><option value="sequence">连续章节联合审读</option></Select></label>
-      {scope === 'sequence' && <label>连续章数<Select aria-label="连续章数" value={reviewWindow} onChange={(event) => setWindow(Number(event.target.value))}><option value={3}>最近3章</option><option value={5}>最近5章</option></Select></label>}
+      {scope === 'sequence' && <label>连续章数<Select aria-label="连续章数" value={reviewWindow} onChange={(event) => setWindow(Number(event.target.value))}><option value={2}>最近2章</option><option value={3}>最近3章</option><option value={5}>最近5章</option></Select></label>}
       <label>审阅 Agent<Select aria-label="审阅 Agent" value={adapter} onChange={(event) => onAdapter(event.target.value as AgentAdapterInfo['id'])}>{agents.map((agent) => <option key={agent.id} value={agent.id} disabled={!agent.available}>{agent.name}{agent.available ? '' : '（不可用）'}</option>)}</Select></label>
       <button className="primary" disabled={!file || starting || running.length > 0} onClick={async () => { setStarting(true); setError(''); try { await onRun(file, scope, reviewWindow); } catch (cause) { setError(String(cause)); } finally { setStarting(false); } }}>{starting ? '正在准备完整章节…' : '开始文学审阅'}</button>
       {error && <p role="alert" className="form-error">{error}</p>}
       <label className="review-auto"><input type="checkbox" checked={settings.review.afterWriter} onChange={(event) => void onSettings({ review: { ...settings.review, afterWriter: event.target.checked } })} />Writer 完成后自动审阅</label>
-      <p className="review-hint">自动精读实际改动的正文；每{settings.review.sequenceEvery}次完成加入连续章节审读。批量改写按连续章节分组。不依赖打开的编辑器，也不自动改稿。</p>
+      <p className="review-hint">自动精读实际改动的正文；每{settings.review.sequenceEvery}次完成加入连续章节审读。批量改写按连续章节分组。结论仅限本次已有正文，不代表更长篇幅或全书质量。不依赖打开的编辑器，也不自动改稿。</p>
       {running.map((task) => <div className="review-active-task" key={task.id}><span>{task.objective}</span><button onClick={() => void onCancel(task.id)}>停止本次审阅</button></div>)}
     </section>
-    <div className="review-coverage"><b>{covered.size} / {files.length} 章有当前版本的完整检查记录</b><span>检查范围内没有发现问题也不保证文学质量；未检查、资料不足、失败与旧版结果分别保留。</span></div>
+    <div className="review-coverage"><b>{covered.size} / {files.length} 章有当前版本的模型检查记录</b><span>此数字只说明审阅步骤和引文齐全，不表示作者已认可可读性；未检查、资料不足、失败与旧版结果分别保留。</span></div>
     {!reports.length && <section><h3>这部作品尚无逐项文学审阅记录</h3><p>旧版 Observer 的空评论不能补算为六个维度都已检查。请选择章节开始。</p></section>}
     {(showAll ? reports : reports.slice(0, 8)).map((report) => <section className={`review-report review-${report.status}`} key={report.id}>
-      <div className="review-report-heading"><h3>{report.scope === 'sequence' ? '联合审读' : '本章精读'} · {fileTitle(report.primaryFile)}</h3><strong>{report.stale ? '基于旧版正文 · ' : ''}{statuses[report.status]}</strong></div>
+      <div className="review-report-heading"><h3>{report.scope === 'sequence' ? '联合审读' : '本章精读'} · {fileTitle(report.primaryFile)}</h3><strong>{report.protocolVersion !== 4 ? '旧协议 · ' : ''}{report.stale ? '基于旧版正文 · ' : ''}{statuses[report.status]}</strong></div>
       <small>{new Date(report.createdAt).toLocaleString()} {report.sourceWriterTaskId ? '· Writer 完成后自动发起' : '· 手动发起'}</small>
       <p>{report.summary}</p>
+      {!report.stale && ['clear', 'findings'].includes(report.status) && <div className="review-author-verdict">
+        <p>作者的实际读感优先。即使模型报告完整，你仍可以把读不懂的正文退回重写。</p>
+        {authorRewriteTask(report) ? <strong>已建立作者退回任务，当前稿仍待顺读验收。</strong> : rejecting === report.id ? <form onSubmit={(event) => { event.preventDefault(); void submitReaderRejection(report); }}>
+          <label>哪里读不懂<textarea value={readerReason} onChange={(event) => setReaderReason(event.target.value)} placeholder="例如：人物位置与动作接不上，第二章救援过程无法形成清楚画面" /></label>
+          <small>重写范围：{report.sources.filter((source) => !source.referenceOnly).map((source) => fileTitle(source.filePath)).join('、')}</small>
+          {readerError && <p role="alert">{readerError}</p>}
+          <div><button type="button" onClick={() => { setRejecting(null); setReaderError(''); }}>取消</button><button type="submit" disabled={submittingRejection}>{submittingRejection ? '正在建立…' : '建立重写任务'}</button></div>
+        </form> : <button onClick={() => { setRejecting(report.id); setReaderReason(''); setReaderError(''); }}>读不懂，退回重写</button>}
+      </div>}
       {!!report.quoteNormalizations?.length && <details><summary>引用格式核对（{report.quoteNormalizations.length}处）</summary><p>仅移除了成对的外层展示引号，内部文字已在对应正文快照中逐字匹配。原始返回保留供核对。</p>{report.quoteNormalizations.map((item, index) => <article key={index}><b>{item.phase === 'reading' ? '初读' : '复核'} · {fileTitle(item.filePath)}</b><p>原始返回：{item.originalQuote}</p><blockquote>{item.quote}</blockquote></article>)}</details>}
       {report.writingRequirements && <details><summary>本次写作要求 · {report.taskAlignment?.status === 'met' ? '已核对' : report.taskAlignment?.status === 'unmet' ? '尚未达到' : '待核对'}</summary><p>{report.writingRequirements}</p><p>{report.taskAlignment?.finding}</p>{report.taskAlignment?.evidence.map((item, index) => <blockquote key={index}>{item.quote}</blockquote>)}</details>}
       <div className="review-source-list">{report.sources.map((source) => <button key={source.filePath} onClick={() => onOpen(source.filePath)}>{source.referenceOnly ? '参考 · ' : ''}{fileTitle(source.filePath)}</button>)}</div>
       {!!report.gaps.length && <div className="review-gaps"><b>本次检查的限制</b>{report.gaps.map((gap) => <p key={gap}>{gap}</p>)}</div>}
       {!!report.chapterReadings?.length && <details className="review-chapter-readings"><summary>逐章阅读依据（{report.chapterReadings.length}章）</summary>{report.chapterReadings.map((reading) => <article key={reading.filePath}><b>{fileTitle(reading.filePath)}</b><p>{reading.change}</p>{reading.evidence.map((item, index) => <blockquote key={index}>{item.quote}</blockquote>)}</article>)}</details>}
-      {report.coldReading && <details><summary>第一遍正文阅读与疑点复核</summary>{report.coldReading.readings.map(reading => <section key={reading.filePath}><b>{fileTitle(reading.filePath)}</b><p>{reading.understanding}</p>{reading.frictions.map((item, index) => <blockquote key={index}>{item.quote}<p>{item.difficulty}</p><p>{item.suggestion}</p></blockquote>)}</section>)}{report.coldResolutions?.map((row, index) => <p key={index}>{row.decision === 'retain' ? '保留意见' : '已排除'}：{row.quote} — {row.reason}</p>)}</details>}<div className="review-assessments">{report.assessments.map((row) => <details key={row.dimension}><summary><b>{REVIEW_DIMENSIONS[row.dimension]}</b><span>{row.status === 'issues' ? '需要修改' : row.status === 'clear' ? '已检查' : '资料不足'}</span></summary><p>{row.finding}</p>{row.evidence.map((evidence, index) => <blockquote key={index}><button onClick={() => onOpen(evidence.filePath)}>{fileTitle(evidence.filePath)}</button>{evidence.quote}</blockquote>)}</details>)}</div>
+      {report.coldReading && <details className="review-scene-map"><summary>第一遍整章盲读与场景地图</summary>
+        {report.coldReading.readings.map((reading) => <section key={reading.filePath}>
+          <b>{fileTitle(reading.filePath)}</b><p>{reading.understanding}</p>
+          {reading.sceneTrace?.map((trace) => <article key={trace.windowIndex}>
+            <strong>阅读段 {trace.windowIndex} · {trace.clarity === 'unclear' ? '读不清' : '可追踪'}</strong>
+            <blockquote>{trace.quote}</blockquote>
+            <p>位置与人物：{trace.placeAndPeople}</p><p>眼前目标：{trace.immediateGoal}</p>
+            <p>行动与结果：{trace.actionAndResult}</p><p>前后衔接：{trace.bridge}</p>
+            {trace.readerQuestion && <p>读者疑问：{trace.readerQuestion}</p>}
+          </article>)}
+          {reading.frictions.map((item, index) => <blockquote key={index}>{item.quote}<p>{item.difficulty}</p><p>{item.suggestion}</p></blockquote>)}
+        </section>)}
+        {report.coldResolutions?.map((row, index) => <p key={index}>{row.decision === 'retain' ? '保留意见' : '已排除'}：{row.quote} — {row.reason}</p>)}
+      </details>}
+      <div className="review-assessments">{report.assessments.map((row) => <details key={row.dimension}><summary><b>{REVIEW_DIMENSIONS[row.dimension]}</b><span>{row.status === 'issues' ? '需要修改' : row.status === 'clear' ? '已检查' : '资料不足'}</span></summary><p>{row.finding}</p>{row.evidence.map((evidence, index) => <blockquote key={index}><button onClick={() => onOpen(evidence.filePath)}>{fileTitle(evidence.filePath)}</button>{evidence.quote}</blockquote>)}</details>)}</div>
       {!!report.commentIds.length && <div className="review-findings"><h4>可处理的意见</h4>{report.commentIds.map((id) => { const comment = project.comments.find((item) => item.id === id); return comment ? <article key={id}><button onClick={() => onComment(comment)}><b>{fileTitle(comment.anchor.filePath)} · {comment.summary}</b></button><blockquote>{comment.anchor.quote}</blockquote><p>{comment.evidence}</p><p>{comment.suggestedAction}</p><button onClick={async () => { await windowApi().commentFeedback({ commentId: id, action: 'accept' }); await onRefresh(); }}>接受建议</button><button onClick={() => onComment(comment)}>定位并修改 / 复查</button></article> : null; })}</div>}
       {!!report.unanchored.length && <div className="review-gaps"><h4>待核实意见（未丢弃）</h4>{report.unanchored.map((item, index) => <p key={index}>{item.filePath}：{item.summary} — {item.reason}「{item.quote}」</p>)}</div>}
       {report.status !== 'running' && <button disabled={starting || running.length > 0} onClick={async () => { setStarting(true); setError(''); try { await onRun(report.primaryFile, report.scope, 5, report.sourceWriterTaskId); } catch (cause) { setError(String(cause)); } finally { setStarting(false); } }}>按当前版本重新审阅</button>}

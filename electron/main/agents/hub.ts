@@ -16,7 +16,7 @@ import { COLD_READING_SCHEMA, coldReadingPrompt, NAVIGATION_SCHEMA, OBSERVER_SCH
 
 import { compareNaturalPath } from '../../../src/shared/natural-sort.js';
 import { ContextAssembler } from '../context.js';
-import { addReviewReferences, buildReviewBundle, finishReview, pendingReview, validateReviewQuotes, writerReviewOutcome } from '../literary-review.js';
+import { addReviewReferences, buildReviewBundle, coldReadingGaps, finishReview, pendingReview, validateReviewQuotes, writerReviewOutcome } from '../literary-review.js';
 import type { ReviewReport } from '../../../src/shared/types.js';
 import { signalAgent } from './terminate.js';
 import { withDeadline } from '../shutdown.js';
@@ -277,10 +277,8 @@ export class AgentHub {
       const normalizedReading = normalizeReviewQuotes(originalReading, observer.bundle!.sources, 'reading');
       const reading = normalizedReading.value as unknown as import('../../../src/shared/types.js').ColdReading;
       observer.quoteNormalizations = normalizedReading.normalizations;
-      for (const source of observer.bundle!.sources) {
-        const rows = reading.readings?.filter(row => row.filePath === source.filePath);
-        if (rows?.length !== 1 || !rows[0].quote?.trim() || !source.content.includes(rows[0].quote) || !rows[0].understanding?.trim() || !Array.isArray(rows[0].frictions) || rows[0].frictions.some(item => !item.quote?.trim() || !source.content.includes(item.quote) || !item.difficulty?.trim() || !item.suggestion?.trim())) throw new Error('第一遍正文阅读记录缺失或引文不匹配，不能宣布审查完成。');
-      }
+      const readingGaps = coldReadingGaps(reading, observer.bundle!.sources);
+      if (readingGaps.length) throw new Error(`第一遍正文阅读未覆盖全文，不能宣布审查完成：${readingGaps.join('；')}`);
       observer.coldReading = reading;
       await writeJson(path.join(directory, 'cold-reading.json'), reading);
       await this.project.eventStore.append('review.report', { ...pendingReview(observer, id), coldReading: reading, summary: '独立正文阅读已完成，正在结合上下文复核。' } as never, 'observer');
@@ -418,9 +416,11 @@ export class AgentHub {
     const state = await this.project.state();
     const task = state.tasks.find((item) => item.id === writer.creativeTaskId);
     if (!task) return;
+    if (task.requiresAuthorReadability && task.status === 'completed') return;
     const files = writer.changedFiles.filter((file) => state.files.some((item) => item.path === file && item.category === 'manuscript'));
     const result = writerReviewOutcome(writerId, files, state.reviews ?? []);
-    await this.project.eventStore.append('task.upsert', { ...task, status: result.complete ? 'completed' : 'blocked', agentWork: result.complete ? '当前版本的文学审阅与写作要求核对已完成。' : `文学审阅仍有意见或缺口，待完成：${result.missing.join('、')}`, updatedAt: now(), cancellationReason: undefined } as never, 'observer');
+    const authorGate = result.complete && task.requiresAuthorReadability;
+    await this.project.eventStore.append('task.upsert', { ...task, status: result.complete && !authorGate ? 'completed' : 'blocked', agentWork: authorGate ? '模型审阅已完成；仍须作者顺读正文并明确确认可读性。' : result.complete ? '当前版本的文学审阅与写作要求核对已完成。' : `文学审阅仍有意见或缺口，待完成：${result.missing.join('、')}`, updatedAt: now(), cancellationReason: undefined } as never, 'observer');
   }
 
   private async acceptObserverResult(input: ObserverRunRequest, message: string, taskId: string, baselineHashes: Record<string, string>) {

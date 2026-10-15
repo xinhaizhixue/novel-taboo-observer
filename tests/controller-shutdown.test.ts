@@ -61,7 +61,7 @@ describe('Writer 完成后的后台审阅', () => {
     const { controller } = await fixture();
     const file = await controller.project.readFile('manuscript/第一章.md');
     const prior: AgentTaskRecord = { id: 'review-existing-task', adapterId: 'claude', role: 'observer', state: status === 'cancelled' ? 'cancelled' : 'completed', objective: '联合审阅', scope: [file.path], completionCriteria: [], startedAt: new Date().toISOString(), startHashes: {}, changedFiles: [] };
-    const report: ReviewReport = { id: 'review-existing-report', taskId: prior.id, scope: 'sequence', protocolVersion: 3, status, primaryFile: file.path, createdAt: prior.startedAt, summary: '已有检查结果', sources: [{ filePath: file.path, hash: file.hash }], omittedPaths: [], gaps: status === 'incomplete' ? ['缺少一项证据'] : [], assessments: [], commentIds: [], unanchored: [] };
+    const report: ReviewReport = { id: 'review-existing-report', taskId: prior.id, scope: 'sequence', protocolVersion: 4, status, primaryFile: file.path, createdAt: prior.startedAt, summary: '已有检查结果', sources: [{ filePath: file.path, hash: file.hash }], omittedPaths: [], gaps: status === 'incomplete' ? ['缺少一项证据'] : [], assessments: [], commentIds: [], unanchored: [] };
     await controller.project.eventStore.append('agent.task', prior as never, 'observer');
     await controller.project.eventStore.append('review.report', report as never, 'observer');
     const run = vi.spyOn(controller.hub, 'runObserver').mockResolvedValue({ ...prior, id: 'new-review-task', state: 'running' });
