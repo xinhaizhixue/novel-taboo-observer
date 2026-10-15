@@ -57,7 +57,7 @@ export function ReviewPanel({ project, currentFile, settings, agents, adapter, o
     {!reports.length && <section><h3>这部作品尚无逐项文学审阅记录</h3><p>旧版 Observer 的空评论不能补算为六个维度都已检查。请选择章节开始。</p></section>}
     {(showAll ? reports : reports.slice(0, 8)).map((report) => <section className={`review-report review-${report.status}`} key={report.id}>
       <div className="review-report-heading"><h3>{report.scope === 'sequence' ? '联合审读' : '本章精读'} · {fileTitle(report.primaryFile)}</h3><strong>{report.protocolVersion !== 4 ? '旧协议 · ' : ''}{report.stale ? '基于旧版正文 · ' : ''}{statuses[report.status]}</strong></div>
-      <small>{new Date(report.createdAt).toLocaleString()} {report.sourceWriterTaskId ? '· Writer 完成后自动发起' : '· 手动发起'}</small>
+      <small>{new Date(report.createdAt).toLocaleString()} {report.sourceWriterTaskId ? '· 关联 Writer 交付稿' : '· 独立审阅'}</small>
       <p>{report.summary}</p>
       {!report.stale && ['clear', 'findings'].includes(report.status) && <div className="review-author-verdict">
         <p>作者的实际读感优先。即使模型报告完整，你仍可以把读不懂的正文退回重写。</p>

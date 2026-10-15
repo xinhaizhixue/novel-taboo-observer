@@ -30,7 +30,9 @@
 
 ## 下载桌面版
 
-在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.6 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
+在 [GitHub Releases](https://github.com/xinhaizhixue/novel-taboo-observer/releases) 下载发行包。v0.3.7 提供 macOS Apple Silicon（arm64）的 DMG 和 ZIP；应用未作 Developer ID 签名或公证，首次启动可能需要在 Finder 中右键打开。Agent 功能需要本机已安装并登录对应 CLI。版本改进及校验值随 Release 提供。
+
+v0.3.7 修正报告来源文案：与 Writer 任务有关联的报告统一显示“关联 Writer 交付稿”，不再把手动复查误写成自动发起。
 
 v0.3.6 加入整章盲读场景地图，逐段核对人物位置、目标、行动与衔接；缺段、错引文或未处理的读不懂之处会保留为检查缺口。模型检查数字与作者读感验收分开，作者退回的重写任务不会被模型复审自动关闭。连续审读支持从两章开始，结论仅限实际纳入的正文。
 
